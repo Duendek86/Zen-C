@@ -382,44 +382,99 @@ Type *parse_type_base(ParserContext *ctx, Lexer *l)
         Type *ty = type_new(TYPE_STRUCT);
         ty->name = name;
 
-        // Handle Generics <T>
+        // Handle Generics <T> or <K, V>
         if (lexer_peek(l).type == TOK_LANGLE)
         {
             lexer_next(l); // eat <
-            Type *arg = parse_type_formal(ctx, l);
+            Type *first_arg = parse_type_formal(ctx, l);
+            char *first_arg_str = type_to_string(first_arg);
 
-            // Handle nested generics like Vec<Vec<int>> where >> is tokenized as one
-            // op
+            // Check for multi-arg: <K, V>
             Token next_tok = lexer_peek(l);
-            if (next_tok.type == TOK_RANGLE)
+            if (next_tok.type == TOK_COMMA)
             {
-                lexer_next(l); // Consume >
-            }
-            else if (next_tok.type == TOK_OP && next_tok.len == 2 &&
-                     strncmp(next_tok.start, ">>", 2) == 0)
-            {
-                // Split >> into two > tokens
-                // Consume the first > by advancing lexer manually
-                l->pos += 1;
-                l->col += 1;
+                // Multi-arg case
+                char **args = xmalloc(sizeof(char *) * 8);
+                int arg_count = 0;
+                args[arg_count++] = xstrdup(first_arg_str);
+
+                while (lexer_peek(l).type == TOK_COMMA)
+                {
+                    lexer_next(l); // eat ,
+                    Type *arg = parse_type_formal(ctx, l);
+                    char *arg_str = type_to_string(arg);
+                    args = realloc(args, sizeof(char *) * (arg_count + 1));
+                    args[arg_count++] = xstrdup(arg_str);
+                    free(arg_str);
+                }
+
+                // Consume >
+                next_tok = lexer_peek(l);
+                if (next_tok.type == TOK_RANGLE)
+                {
+                    lexer_next(l);
+                }
+                else if (next_tok.type == TOK_OP && next_tok.len == 2 &&
+                         strncmp(next_tok.start, ">>", 2) == 0)
+                {
+                    l->pos += 1;
+                    l->col += 1;
+                }
+                else
+                {
+                    zpanic_at(t, "Expected > after generic");
+                }
+
+                // Call multi-arg instantiation
+                instantiate_generic_multi(ctx, name, args, arg_count, t);
+
+                // Build mangled name
+                char mangled[256];
+                strcpy(mangled, name);
+                for (int i = 0; i < arg_count; i++)
+                {
+                    char *clean = sanitize_mangled_name(args[i]);
+                    strcat(mangled, "_");
+                    strcat(mangled, clean);
+                    free(clean);
+                    free(args[i]);
+                }
+                free(args);
+
+                free(ty->name);
+                ty->name = xstrdup(mangled);
             }
             else
             {
-                zpanic_at(t, "Expected > after generic");
+                // Single-arg case - PRESERVE ORIGINAL FLOW EXACTLY
+                if (next_tok.type == TOK_RANGLE)
+                {
+                    lexer_next(l); // Consume >
+                }
+                else if (next_tok.type == TOK_OP && next_tok.len == 2 &&
+                         strncmp(next_tok.start, ">>", 2) == 0)
+                {
+                    // Split >> into two > tokens
+                    l->pos += 1;
+                    l->col += 1;
+                }
+                else
+                {
+                    zpanic_at(t, "Expected > after generic");
+                }
+
+                instantiate_generic(ctx, name, first_arg_str, t);
+
+                char *clean_arg = sanitize_mangled_name(first_arg_str);
+                char mangled[256];
+                sprintf(mangled, "%s_%s", name, clean_arg);
+                free(clean_arg);
+
+                free(ty->name);
+                ty->name = xstrdup(mangled);
             }
 
-            char *arg_str = type_to_string(arg);
-            instantiate_generic(ctx, name, arg_str, t);
-
-            char *clean_arg = sanitize_mangled_name(arg_str);
-            char mangled[256];
-            sprintf(mangled, "%s_%s", name, clean_arg);
-            free(clean_arg);
-
-            free(ty->name);
-            ty->name = xstrdup(mangled);
-            free(arg_str);
-
+            free(first_arg_str);
             ty->kind = TYPE_STRUCT;
             ty->args = NULL;
             ty->arg_count = 0;

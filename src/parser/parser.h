@@ -321,6 +321,8 @@ void add_to_global_list(ParserContext *ctx, ASTNode *node);
 void register_builtins(ParserContext *ctx);
 void add_instantiated_func(ParserContext *ctx, ASTNode *fn);
 void instantiate_generic(ParserContext *ctx, const char *name, const char *concrete_type, Token t);
+void instantiate_generic_multi(ParserContext *ctx, const char *name, char **args, int arg_count,
+                               Token t);
 char *sanitize_mangled_name(const char *name);
 void register_type_alias(ParserContext *ctx, const char *alias, const char *original);
 const char *find_type_alias(ParserContext *ctx, const char *alias);

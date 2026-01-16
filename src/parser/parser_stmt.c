@@ -3238,14 +3238,33 @@ ASTNode *parse_struct(ParserContext *ctx, Lexer *l, int is_union)
     Token n = lexer_next(l);
     char *name = token_strdup(n);
 
-    // Generic Param <T>
-    char *gp = NULL;
+    // Generic Params <T> or <K, V>
+    char **gps = NULL;
+    int gp_count = 0;
     if (lexer_peek(l).type == TOK_LANGLE)
     {
-        lexer_next(l);
-        Token g = lexer_next(l);
-        gp = token_strdup(g);
-        lexer_next(l);
+        lexer_next(l); // eat <
+        while (1)
+        {
+            Token g = lexer_next(l);
+            gps = realloc(gps, sizeof(char *) * (gp_count + 1));
+            gps[gp_count++] = token_strdup(g);
+
+            Token next = lexer_peek(l);
+            if (next.type == TOK_COMMA)
+            {
+                lexer_next(l); // eat ,
+            }
+            else if (next.type == TOK_RANGLE)
+            {
+                lexer_next(l); // eat >
+                break;
+            }
+            else
+            {
+                zpanic_at(next, "Expected ',' or '>' in generic parameter list");
+            }
+        }
         register_generic(ctx, name);
     }
 
@@ -3255,16 +3274,13 @@ ASTNode *parse_struct(ParserContext *ctx, Lexer *l, int is_union)
         lexer_next(l);
         ASTNode *n = ast_create(NODE_STRUCT);
         n->strct.name = name;
-        n->strct.is_template = (gp != NULL);
-        n->strct.generic_param = gp;
+        n->strct.is_template = (gp_count > 0);
+        n->strct.generic_params = gps;
+        n->strct.generic_param_count = gp_count;
         n->strct.is_union = is_union;
         n->strct.fields = NULL;
         n->strct.is_incomplete = 1;
 
-        if (!gp)
-        {
-            add_to_struct_list(ctx, n);
-        }
         return n;
     }
 
@@ -3390,7 +3406,7 @@ ASTNode *parse_struct(ParserContext *ctx, Lexer *l, int is_union)
     add_to_struct_list(ctx, node);
 
     // Auto-prefix struct name if in module context
-    if (ctx->current_module_prefix && !gp)
+    if (ctx->current_module_prefix && gp_count == 0)
     { // Don't prefix generic templates
         char *prefixed_name = xmalloc(strlen(ctx->current_module_prefix) + strlen(name) + 2);
         sprintf(prefixed_name, "%s_%s", ctx->current_module_prefix, name);
@@ -3403,24 +3419,25 @@ ASTNode *parse_struct(ParserContext *ctx, Lexer *l, int is_union)
     // Initialize Type Info so we can track traits (like Drop)
     node->type_info = type_new(TYPE_STRUCT);
     node->type_info->name = xstrdup(name);
-    if (gp)
+    if (gp_count > 0)
     {
         node->type_info->kind = TYPE_GENERIC;
         // TODO: track generic params
     }
 
     node->strct.fields = h;
-    node->strct.generic_param = gp;
+    node->strct.generic_params = gps;
+    node->strct.generic_param_count = gp_count;
     node->strct.is_union = is_union;
 
-    if (gp)
+    if (gp_count > 0)
     {
         node->strct.is_template = 1;
         register_template(ctx, name, node);
     }
 
     // Register definition for 'use' lookups and LSP
-    if (!gp)
+    if (gp_count == 0)
     {
         register_struct_def(ctx, name, node);
     }
@@ -3430,10 +3447,10 @@ ASTNode *parse_struct(ParserContext *ctx, Lexer *l, int is_union)
 
 Type *parse_type_obj(ParserContext *ctx, Lexer *l)
 {
-    // 1. Parse the base type (int, U32, MyStruct, etc.)
+    // Parse the base type (int, U32, MyStruct, etc.)
     Type *t = parse_type_base(ctx, l);
 
-    // 2. Handle Pointers (e.g. int***)
+    // Handle Pointers
     while (lexer_peek(l).type == TOK_OP && lexer_peek(l).start[0] == '*')
     {
         lexer_next(l); // eat *
@@ -3442,8 +3459,6 @@ Type *parse_type_obj(ParserContext *ctx, Lexer *l)
         ptr->inner = t;
         t = ptr;
     }
-
-    // (Optional: You can add array parsing here later if needed)
 
     return t;
 }

@@ -376,7 +376,8 @@ struct ASTNode
             char *name;
             ASTNode *fields;
             int is_template;
-            char *generic_param;
+            char **generic_params;   // Array of generic parameter names (for example, ["K", "V"])
+            int generic_param_count; // Number of generic parameters
             char *parent;
             int is_union;
             int is_packed;     // @packed attribute.

@@ -8,47 +8,45 @@ test "test_string_methods" {
     
     // Substring
     var s1: String = String::from("Hello World");
-    var sub: String = String::substring(&s1, 0, 5);
+    var sub: String = s1.substring(0, 5);
     var expected1: String = String::from("Hello");
-    if (String::eq(&sub, expected1)) {
+    if (sub.eq(expected1)) {
         println "  -> substring(0, 5): Passed";
     } else {
         assert(false, "substring(0, 5) failed");
     }
     
     // Substring middle
-    var sub2: String = String::substring(&s1, 6, 5);
+    var sub2: String = s1.substring(6, 5);
     var expected2: String = String::from("World");
-    if (String::eq(&sub2, expected2)) {
+    if (sub2.eq(expected2)) {
         println "  -> substring(6, 5): Passed";
     } else {
         assert(false, "substring(6, 5) failed");
     }
     
-    // Find
-    var pos = String::find(&s1, 'W');
-    if (pos.is_some) {
-        var idx = pos.unwrap();
-        if (idx == 6) {
-             println "  -> find('W'): Passed";
-        } else {
-             assert(false, "find('W') returned wrong index");
-        }
+    // Find character - found
+    var pos: Option<usize> = s1.find('W');
+    if (pos.is_some()) {
+        var idx: usize = pos.unwrap();
+        assert(idx == (usize)6, "find('W') index mismatch");
+        println "  -> find('W'): Passed (found at index 6)";
     } else {
-         assert(false, "find('W') failed to find char");
+        assert(false, "find('W') failed (not found)");
     }
     
-    var pos2 = String::find(&s1, 'Z');
+    // Find character - not found
+    var pos2: Option<usize> = s1.find('Z');
     if (pos2.is_none()) {
-         println "  -> find('Z'): Passed (Correctly not found)";
+        println "  -> find('Z'): Passed (not found)";
     } else {
-         assert(false, "find('Z') should have returned none");
+        assert(false, "find('Z') failed (found unexpectedly)");
     }
-
+    
     // Length
-    var len = String::length(&s1);
-    if (len == 11) {
-        println "  -> length(): Passed";
+    var len: usize = s1.length();
+    if (len == (usize)11) {
+        println "  -> length(): Passed (11)";
     } else {
         assert(false, "length() failed");
     }
@@ -66,29 +64,16 @@ test "test_string_methods" {
         assert(false, "!contains('Z') failed");
     }
 
-    // Cleanup
-    s1.free();
-    sub.free();
-    sub2.free();
-    expected1.free();
-    expected2.free();
-    
     // Append
-    println "Testing String Append...";
-    var s2 = String::from("Hello");
-    var s3 = String::from(" World");
-    String::append(&s2, s3);
-    var expected_full = String::from("Hello World");
-    
-    if (String::eq(&s2, expected_full)) {
+    var s2: String = String::from("Hello");
+    var s3: String = String::from(" World");
+    s2.append(s3);
+    var expected6: String = String::from("Hello World");
+    if (s2.eq(expected6)) {
         println "  -> append(): Passed";
     } else {
         assert(false, "append() failed");
     }
-    
-    s2.free();
-    s3.free(); // Free the wrapper...
-    expected_full.free();
     
     println "All String methods passed!";
 }

@@ -1948,8 +1948,11 @@ void instantiate_generic(ParserContext *ctx, const char *tpl, const char *arg, T
         ASTNode *i = ast_create(NODE_STRUCT);
         i->strct.name = xstrdup(m);
         i->strct.is_template = 0;
-        i->strct.fields = copy_fields_replacing(ctx, t->struct_node->strct.fields,
-                                                t->struct_node->strct.generic_param, arg);
+        // Use first generic param for substitution (single-param backward compat)
+        const char *gp = (t->struct_node->strct.generic_param_count > 0)
+                             ? t->struct_node->strct.generic_params[0]
+                             : "T";
+        i->strct.fields = copy_fields_replacing(ctx, t->struct_node->strct.fields, gp, arg);
         struct_node_copy = i;
         register_struct_def(ctx, m, i);
     }
@@ -2001,6 +2004,95 @@ void instantiate_generic(ParserContext *ctx, const char *tpl, const char *arg, T
             instantiate_methods(ctx, it, m, arg);
         }
         it = it->next;
+    }
+}
+
+void instantiate_generic_multi(ParserContext *ctx, const char *tpl, char **args, int arg_count,
+                               Token token)
+{
+    // Build mangled name from all args
+    char m[256];
+    strcpy(m, tpl);
+    for (int i = 0; i < arg_count; i++)
+    {
+        char *clean = sanitize_mangled_name(args[i]);
+        strcat(m, "_");
+        strcat(m, clean);
+        free(clean);
+    }
+
+    // Check if already instantiated
+    Instantiation *c = ctx->instantiations;
+    while (c)
+    {
+        if (strcmp(c->name, m) == 0)
+        {
+            return; // Already done
+        }
+        c = c->next;
+    }
+
+    // Find the template
+    GenericTemplate *t = ctx->templates;
+    while (t)
+    {
+        if (strcmp(t->name, tpl) == 0)
+        {
+            break;
+        }
+        t = t->next;
+    }
+    if (!t)
+    {
+        zpanic_at(token, "Unknown generic: %s", tpl);
+    }
+
+    // Register instantiation first (to break cycles)
+    Instantiation *ni = xmalloc(sizeof(Instantiation));
+    ni->name = xstrdup(m);
+    ni->template_name = xstrdup(tpl);
+    ni->concrete_arg = (arg_count > 0) ? xstrdup(args[0]) : xstrdup("T");
+    ni->struct_node = NULL;
+    ni->next = ctx->instantiations;
+    ctx->instantiations = ni;
+
+    if (t->struct_node->type == NODE_STRUCT)
+    {
+        ASTNode *i = ast_create(NODE_STRUCT);
+        i->strct.name = xstrdup(m);
+        i->strct.is_template = 0;
+
+        // Copy fields with sequential substitutions for each param
+        ASTNode *fields = t->struct_node->strct.fields;
+        int param_count = t->struct_node->strct.generic_param_count;
+
+        // Perform substitution for each param (simple approach: copy for first param, then replace
+        // in-place)
+        if (param_count > 0 && arg_count > 0)
+        {
+            // First substitution
+            i->strct.fields = copy_fields_replacing(
+                ctx, fields, t->struct_node->strct.generic_params[0], args[0]);
+
+            // Subsequent substitutions (for params B, C, etc.)
+            for (int j = 1; j < param_count && j < arg_count; j++)
+            {
+                ASTNode *tmp = copy_fields_replacing(
+                    ctx, i->strct.fields, t->struct_node->strct.generic_params[j], args[j]);
+                // This leaks prev fields, but that's acceptable for now, still, TODO.
+                i->strct.fields = tmp;
+            }
+        }
+        else
+        {
+            i->strct.fields = copy_fields_replacing(ctx, fields, "T", "int");
+        }
+
+        ni->struct_node = i;
+        register_struct_def(ctx, m, i);
+
+        i->next = ctx->instantiated_structs;
+        ctx->instantiated_structs = i;
     }
 }
 
