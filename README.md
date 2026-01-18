@@ -355,7 +355,8 @@ Zen C supports a shorthand for prompting user input using the `?` prefix.
     - Format specifiers are automatically inferred based on variable type.
 
 ```c
-var age = "How old are you? ";
+var age: int;
+? "How old are you? " (age);
 println "You are {age} years old.";
 ```
 
