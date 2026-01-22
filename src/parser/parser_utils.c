@@ -1143,9 +1143,35 @@ char *replace_type_str(const char *src, const char *param, const char *concrete,
 ASTNode *copy_ast_replacing(ASTNode *n, const char *p, const char *c, const char *os,
                             const char *ns);
 
-// Helper to create type from string (primitives or struct)
 Type *type_from_string_helper(const char *c)
 {
+    if (!c)
+    {
+        return NULL;
+    }
+
+    // Check for pointer suffix '*'
+    size_t len = strlen(c);
+    if (len > 0 && c[len - 1] == '*')
+    {
+        char *base = xmalloc(len);
+        strncpy(base, c, len - 1);
+        base[len - 1] = 0;
+
+        Type *inner = type_from_string_helper(base);
+        free(base);
+
+        return type_new_ptr(inner);
+    }
+
+    if (strncmp(c, "struct ", 7) == 0)
+    {
+        Type *n = type_new(TYPE_STRUCT);
+        n->name = sanitize_mangled_name(c + 7);
+        n->is_explicit_struct = 1;
+        return n;
+    }
+
     if (strcmp(c, "int") == 0)
     {
         return type_new(TYPE_INT);
@@ -1300,7 +1326,6 @@ Type *replace_type_formal(Type *t, const char *p, const char *c, const char *os,
         }
         else if (strcmp(t->name, p) == 0)
         {
-
             return type_from_string_helper(c);
         }
     }
@@ -1410,14 +1435,19 @@ char *replace_mangled_part(const char *src, const char *param, const char *concr
         // Check if param matches here
         if (strncmp(curr, param, plen) == 0)
         {
-            // Check boundaries: Must be delimited by quoted boundaries, OR
-            // underscores, OR string ends
+            // Check boundaries: Must be delimited by underscores to be a mangled identifier
+            // (e.g., Vec_T should match, but standalone T should not)
             int valid = 1;
+            int has_underscore_boundary = 0;
 
             // Check Prev: Start of string OR Underscore
             if (curr > src)
             {
-                if (*(curr - 1) != '_' && is_ident_char(*(curr - 1)))
+                if (*(curr - 1) == '_')
+                {
+                    has_underscore_boundary = 1;
+                }
+                else if (is_ident_char(*(curr - 1)))
                 {
                     valid = 0;
                 }
@@ -1425,6 +1455,16 @@ char *replace_mangled_part(const char *src, const char *param, const char *concr
 
             // Check Next: End of string OR Underscore
             if (valid && curr[plen] != 0 && curr[plen] != '_' && is_ident_char(curr[plen]))
+            {
+                valid = 0;
+            }
+            if (valid && curr[plen] == '_')
+            {
+                has_underscore_boundary = 1;
+            }
+
+            // Only replace if there's at least one underscore boundary
+            if (valid && !has_underscore_boundary)
             {
                 valid = 0;
             }
@@ -1676,6 +1716,13 @@ ASTNode *copy_ast_replacing(ASTNode *n, const char *p, const char *c, const char
 char *sanitize_mangled_name(const char *s)
 {
     char *buf = xmalloc(strlen(s) * 4 + 1);
+
+    // Skip "struct " prefix if present to avoid "struct_" in mangled names
+    if (strncmp(s, "struct ", 7) == 0)
+    {
+        s += 7;
+    }
+
     char *p = buf;
     while (*s)
     {
@@ -1701,6 +1748,48 @@ char *sanitize_mangled_name(const char *s)
     }
     *p = 0;
     return buf;
+}
+
+// Helper to unmangle Ptr suffix back to pointer type ("intPtr" -> "int*")
+char *unmangle_ptr_suffix(const char *s)
+{
+    if (!s)
+    {
+        return NULL;
+    }
+
+    size_t len = strlen(s);
+    if (len <= 3 || strcmp(s + len - 3, "Ptr") != 0)
+    {
+        return xstrdup(s); // No Ptr suffix, return as-is
+    }
+
+    // Extract base type (everything before "Ptr")
+    char *base = xmalloc(len - 2);
+    strncpy(base, s, len - 3);
+    base[len - 3] = '\0';
+
+    char *result = xmalloc(strlen(base) + 16);
+
+    // Check if base is a primitive type
+    if (strcmp(base, "int") == 0 || strcmp(base, "char") == 0 || strcmp(base, "float") == 0 ||
+        strcmp(base, "double") == 0 || strcmp(base, "bool") == 0 || strcmp(base, "void") == 0 ||
+        strcmp(base, "size_t") == 0 || strcmp(base, "usize") == 0 ||
+        strncmp(base, "int8", 4) == 0 || strncmp(base, "int16", 5) == 0 ||
+        strncmp(base, "int32", 5) == 0 || strncmp(base, "int64", 5) == 0 ||
+        strncmp(base, "uint8", 5) == 0 || strncmp(base, "uint16", 6) == 0 ||
+        strncmp(base, "uint32", 6) == 0 || strncmp(base, "uint64", 6) == 0)
+    {
+        sprintf(result, "%s*", base);
+    }
+    else
+    {
+        // Don't unmangle non-primitives ending in Ptr (like Vec_intPtr)
+        strcpy(result, s);
+    }
+
+    free(base);
+    return result;
 }
 
 FuncSig *find_func(ParserContext *ctx, const char *name)
@@ -1832,7 +1921,34 @@ char *instantiate_function_template(ParserContext *ctx, const char *name, const 
                 Token dummy_tok = {0};
                 if (arg_count == 1)
                 {
-                    instantiate_generic(ctx, struct_base, args[0], args[0], dummy_tok);
+                    // Unmangle Ptr suffix if needed (e.g., intPtr -> int*)
+                    char *unmangled = xstrdup(args[0]);
+                    size_t alen = strlen(args[0]);
+                    if (alen > 3 && strcmp(args[0] + alen - 3, "Ptr") == 0)
+                    {
+                        char *base = xstrdup(args[0]);
+                        base[alen - 3] = '\0';
+                        free(unmangled);
+                        unmangled = xmalloc(strlen(base) + 16);
+                        if (strcmp(base, "int") == 0 || strcmp(base, "char") == 0 ||
+                            strcmp(base, "float") == 0 || strcmp(base, "double") == 0 ||
+                            strcmp(base, "bool") == 0 || strcmp(base, "void") == 0 ||
+                            strcmp(base, "size_t") == 0 || strcmp(base, "usize") == 0 ||
+                            strncmp(base, "int8", 4) == 0 || strncmp(base, "int16", 5) == 0 ||
+                            strncmp(base, "int32", 5) == 0 || strncmp(base, "int64", 5) == 0 ||
+                            strncmp(base, "uint8", 5) == 0 || strncmp(base, "uint16", 6) == 0 ||
+                            strncmp(base, "uint32", 6) == 0 || strncmp(base, "uint64", 6) == 0)
+                        {
+                            sprintf(unmangled, "%s*", base);
+                        }
+                        else
+                        {
+                            sprintf(unmangled, "struct %s*", base);
+                        }
+                        free(base);
+                    }
+                    instantiate_generic(ctx, struct_base, args[0], unmangled, dummy_tok);
+                    free(unmangled);
                 }
                 else if (arg_count > 1)
                 {
@@ -2073,18 +2189,7 @@ ASTNode *copy_fields_replacing(ParserContext *ctx, ASTNode *fields, const char *
 
                 if (found)
                 {
-                    char *unmangled = xstrdup(concrete_arg);
-                    size_t alen = strlen(concrete_arg);
-                    if (alen > 3 && strcmp(concrete_arg + alen - 3, "Ptr") == 0)
-                    {
-                        char *base = xstrdup(concrete_arg);
-                        base[alen - 3] = '\0';
-                        // heuristic: Ptr likely maps to struct T*
-                        free(unmangled);
-                        unmangled = xmalloc(strlen(base) + 16);
-                        sprintf(unmangled, "struct %s*", base);
-                        free(base);
-                    }
+                    char *unmangled = unmangle_ptr_suffix(concrete_arg);
                     instantiate_generic(ctx, template_name, concrete_arg, unmangled, fields->token);
                     free(unmangled);
                 }
@@ -2108,9 +2213,14 @@ void instantiate_methods(ParserContext *ctx, GenericImplTemplate *it,
 
     ASTNode *backup_next = it->impl_node->next;
     it->impl_node->next = NULL; // Break link to isolate node
-    const char *subst_arg = unmangled_arg ? unmangled_arg : arg;
+
+    // Use unmangled_arg if provided, otherwise arg
+    char *raw = (char *)(unmangled_arg ? unmangled_arg : arg);
+    char *subst_arg = unmangle_ptr_suffix(raw);
+
     ASTNode *new_impl = copy_ast_replacing(it->impl_node, it->generic_param, subst_arg,
                                            it->struct_name, mangled_struct_name);
+    free(subst_arg);
     it->impl_node->next = backup_next; // Restore
 
     ASTNode *meth = NULL;
@@ -2168,7 +2278,36 @@ void instantiate_methods(ParserContext *ctx, GenericImplTemplate *it,
                         }
                     }
 
-                    instantiate_generic(ctx, gt->name, clean_arg, clean_arg, meth->token);
+                    // Unmangle Ptr suffix if present (e.g., intPtr -> int*)
+                    char *unmangled_arg = xstrdup(clean_arg);
+                    size_t alen = strlen(clean_arg);
+                    if (alen > 3 && strcmp(clean_arg + alen - 3, "Ptr") == 0)
+                    {
+                        char *base = xstrdup(clean_arg);
+                        base[alen - 3] = '\0';
+                        free(unmangled_arg);
+                        unmangled_arg = xmalloc(strlen(base) + 16);
+                        // Check if base is a primitive type
+                        if (strcmp(base, "int") == 0 || strcmp(base, "char") == 0 ||
+                            strcmp(base, "float") == 0 || strcmp(base, "double") == 0 ||
+                            strcmp(base, "bool") == 0 || strcmp(base, "void") == 0 ||
+                            strcmp(base, "size_t") == 0 || strcmp(base, "usize") == 0 ||
+                            strncmp(base, "int8", 4) == 0 || strncmp(base, "int16", 5) == 0 ||
+                            strncmp(base, "int32", 5) == 0 || strncmp(base, "int64", 5) == 0 ||
+                            strncmp(base, "uint8", 5) == 0 || strncmp(base, "uint16", 6) == 0 ||
+                            strncmp(base, "uint32", 6) == 0 || strncmp(base, "uint64", 6) == 0)
+                        {
+                            sprintf(unmangled_arg, "%s*", base);
+                        }
+                        else
+                        {
+                            sprintf(unmangled_arg, "struct %s*", base);
+                        }
+                        free(base);
+                    }
+
+                    instantiate_generic(ctx, gt->name, clean_arg, unmangled_arg, meth->token);
+                    free(unmangled_arg);
                     free(clean_arg);
                 }
                 gt = gt->next;
