@@ -205,7 +205,7 @@ ASTNode *parse_impl(ParserContext *ctx, Lexer *l)
         // RAII: Check for "Drop" trait implementation
         if (strcmp(name1, "Drop") == 0)
         {
-            Symbol *s = find_symbol_entry(ctx, name2);
+            ZenSymbol *s = find_symbol_entry(ctx, name2);
             if (s && s->type_info)
             {
                 s->type_info->traits.has_drop = 1;
@@ -224,7 +224,7 @@ ASTNode *parse_impl(ParserContext *ctx, Lexer *l)
         // Iterator: Check for "Iterable" trait implementation
         else if (strcmp(name1, "Iterable") == 0)
         {
-            Symbol *s = find_symbol_entry(ctx, name2);
+            ZenSymbol *s = find_symbol_entry(ctx, name2);
             if (s && s->type_info)
             {
                 s->type_info->traits.has_iterable = 1;

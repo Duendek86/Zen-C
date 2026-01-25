@@ -10,7 +10,7 @@
 #include <unistd.h>
 
 #ifdef __COSMOPOLITAN__
-#include <cosmopolitan.h>
+#include <cosmo.h>
 #define z_is_windows() IsWindows()
 #else
 #ifdef _WIN32

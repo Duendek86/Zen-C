@@ -32,7 +32,7 @@ ASTNode *parse_program(ParserContext *ctx, Lexer *l);
 extern ParserContext *g_parser_ctx;
 
 // Symbol table
-typedef struct Symbol
+typedef struct ZenSymbol
 {
     char *name;
     char *type_name;
@@ -44,12 +44,12 @@ typedef struct Symbol
     int is_def;
     int const_int_val;
     int is_moved;
-    struct Symbol *next;
-} Symbol;
+    struct ZenSymbol *next;
+} ZenSymbol;
 
 typedef struct Scope
 {
-    Symbol *symbols;
+    ZenSymbol *symbols;
     struct Scope *parent;
 } Scope;
 
@@ -256,7 +256,7 @@ struct ParserContext
     void (*on_error)(void *data, Token t, const char *msg);
 
     // LSP: Flat symbol list (persists after parsing for LSP queries)
-    Symbol *all_symbols;
+    ZenSymbol *all_symbols;
 
     // External C interop: suppress undefined warnings for external symbols
     int has_external_includes; // Set when include <...> is used
@@ -299,7 +299,7 @@ char *consume_and_rewrite(ParserContext *ctx, Lexer *l);
 int is_c_reserved_word(const char *name);
 void warn_c_reserved_word(Token t, const char *name);
 
-// Symbol table
+// ZenSymbol table
 void enter_scope(ParserContext *ctx);
 void exit_scope(ParserContext *ctx);
 void add_symbol(ParserContext *ctx, const char *n, const char *t, Type *type_info);
@@ -307,8 +307,8 @@ void add_symbol_with_token(ParserContext *ctx, const char *n, const char *t, Typ
                            Token tok);
 Type *find_symbol_type_info(ParserContext *ctx, const char *n);
 char *find_symbol_type(ParserContext *ctx, const char *n);
-Symbol *find_symbol_entry(ParserContext *ctx, const char *n);
-Symbol *find_symbol_in_all(ParserContext *ctx,
+ZenSymbol *find_symbol_entry(ParserContext *ctx, const char *n);
+ZenSymbol *find_symbol_in_all(ParserContext *ctx,
                            const char *n); // LSP flat lookup
 char *find_similar_symbol(ParserContext *ctx, const char *name);
 

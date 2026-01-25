@@ -186,7 +186,7 @@ char *infer_type(ParserContext *ctx, ASTNode *node)
 
     if (node->type == NODE_EXPR_VAR)
     {
-        Symbol *sym = find_symbol_entry(ctx, node->var_ref.name);
+        ZenSymbol *sym = find_symbol_entry(ctx, node->var_ref.name);
         if (sym)
         {
             if (sym->type_name)
@@ -273,7 +273,7 @@ char *infer_type(ParserContext *ctx, ASTNode *node)
 
         if (node->call.callee->type == NODE_EXPR_VAR)
         {
-            Symbol *sym = find_symbol_entry(ctx, node->call.callee->var_ref.name);
+            ZenSymbol *sym = find_symbol_entry(ctx, node->call.callee->var_ref.name);
             if (sym && sym->type_info && sym->type_info->kind == TYPE_FUNCTION &&
                 sym->type_info->inner)
             {

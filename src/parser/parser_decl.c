@@ -150,7 +150,7 @@ ASTNode *parse_function(ParserContext *ctx, Lexer *l, int is_async)
     // scope for body) Only check if we parsed a body (not a prototype) function
     if (body && ctx->current_scope)
     {
-        Symbol *sym = ctx->current_scope->symbols;
+        ZenSymbol *sym = ctx->current_scope->symbols;
         while (sym)
         {
             // Check if unused and not prefixed with '_' (conventional ignore)
@@ -624,7 +624,7 @@ ASTNode *parse_var_decl(ParserContext *ctx, Lexer *l)
     // NEW: Capture Const Integer Values
     if (init && init->type == NODE_EXPR_LITERAL && init->literal.type_kind == LITERAL_INT)
     {
-        Symbol *s = find_symbol_entry(ctx, name); // Helper to find the struct
+        ZenSymbol *s = find_symbol_entry(ctx, name); // Helper to find the struct
         if (s)
         {
             s->is_const_value = 1;
@@ -669,7 +669,7 @@ ASTNode *parse_var_decl(ParserContext *ctx, Lexer *l)
         Type *t = find_symbol_type_info(ctx, init->var_ref.name);
         if (!t)
         {
-            Symbol *s = find_symbol_entry(ctx, init->var_ref.name);
+            ZenSymbol *s = find_symbol_entry(ctx, init->var_ref.name);
             if (s)
             {
                 t = s->type_info;
@@ -677,7 +677,7 @@ ASTNode *parse_var_decl(ParserContext *ctx, Lexer *l)
         }
         if (!is_type_copy(ctx, t))
         {
-            Symbol *s = find_symbol_entry(ctx, init->var_ref.name);
+            ZenSymbol *s = find_symbol_entry(ctx, init->var_ref.name);
             if (s)
             {
                 s->is_moved = 1;
@@ -752,7 +752,7 @@ ASTNode *parse_def(ParserContext *ctx, Lexer *l)
 
     // Use is_def flag for manifest constants
     add_symbol(ctx, ns, type_str ? type_str : "unknown", type_obj);
-    Symbol *sym_entry = find_symbol_entry(ctx, ns);
+    ZenSymbol *sym_entry = find_symbol_entry(ctx, ns);
     if (sym_entry)
     {
         sym_entry->is_def = 1;
@@ -770,7 +770,7 @@ ASTNode *parse_def(ParserContext *ctx, Lexer *l)
             Token val_tok = lexer_peek(l);
             int val = atoi(token_strdup(val_tok)); // quick check
 
-            Symbol *s = find_symbol_entry(ctx, ns);
+            ZenSymbol *s = find_symbol_entry(ctx, ns);
             if (s)
             {
                 s->is_const_value = 1;

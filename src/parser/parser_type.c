@@ -634,7 +634,7 @@ Type *parse_type_base(ParserContext *ctx, Lexer *l)
             {
                 // Look up in symbol table for constant propagation
                 char *name = token_strdup(size_tok);
-                Symbol *sym = find_symbol_entry(ctx, name);
+                ZenSymbol *sym = find_symbol_entry(ctx, name);
                 if (sym && sym->is_const_value)
                 {
                     size = sym->const_int_val;
@@ -846,7 +846,7 @@ Type *parse_type_formal(ParserContext *ctx, Lexer *l)
         {
             Token t = lexer_peek(l);
             char *name = token_strdup(t);
-            Symbol *sym = find_symbol_entry(ctx, name);
+            ZenSymbol *sym = find_symbol_entry(ctx, name);
             if (sym && sym->is_const_value)
             {
                 size = sym->const_int_val;

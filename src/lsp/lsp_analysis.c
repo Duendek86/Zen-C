@@ -367,7 +367,7 @@ void lsp_completion(const char *uri, int line, int col, int id)
                     strncpy(var_name, ptr + start_ident, len);
                     var_name[len] = 0;
 
-                    Symbol *sym = find_symbol_in_all(g_project->ctx, var_name);
+                    ZenSymbol *sym = find_symbol_in_all(g_project->ctx, var_name);
                     char *type_name = NULL;
                     if (sym)
                     {

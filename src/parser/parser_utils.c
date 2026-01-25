@@ -125,7 +125,7 @@ void exit_scope(ParserContext *ctx)
     }
 
     // Check for unused variables
-    Symbol *sym = ctx->current_scope->symbols;
+    ZenSymbol *sym = ctx->current_scope->symbols;
     while (sym)
     {
         if (!sym->is_used && strcmp(sym->name, "self") != 0 && sym->name[0] != '_')
@@ -156,7 +156,7 @@ void add_symbol_with_token(ParserContext *ctx, const char *n, const char *t, Typ
         Scope *p = ctx->current_scope->parent;
         while (p)
         {
-            Symbol *sh = p->symbols;
+            ZenSymbol *sh = p->symbols;
             while (sh)
             {
                 if (strcmp(sh->name, n) == 0)
@@ -173,7 +173,7 @@ void add_symbol_with_token(ParserContext *ctx, const char *n, const char *t, Typ
             p = p->parent;
         }
     }
-    Symbol *s = xmalloc(sizeof(Symbol));
+    ZenSymbol *s = xmalloc(sizeof(ZenSymbol));
     s->name = xstrdup(n);
     s->type_name = t ? xstrdup(t) : NULL;
     s->type_info = type_info;
@@ -184,7 +184,7 @@ void add_symbol_with_token(ParserContext *ctx, const char *n, const char *t, Typ
     ctx->current_scope->symbols = s;
 
     // LSP: Also add to flat list (for persistent access after scope exit)
-    Symbol *lsp_copy = xmalloc(sizeof(Symbol));
+    ZenSymbol *lsp_copy = xmalloc(sizeof(ZenSymbol));
     *lsp_copy = *s;
     lsp_copy->next = ctx->all_symbols;
     ctx->all_symbols = lsp_copy;
@@ -199,7 +199,7 @@ Type *find_symbol_type_info(ParserContext *ctx, const char *n)
     Scope *s = ctx->current_scope;
     while (s)
     {
-        Symbol *sym = s->symbols;
+        ZenSymbol *sym = s->symbols;
         while (sym)
         {
             if (strcmp(sym->name, n) == 0)
@@ -222,7 +222,7 @@ char *find_symbol_type(ParserContext *ctx, const char *n)
     Scope *s = ctx->current_scope;
     while (s)
     {
-        Symbol *sym = s->symbols;
+        ZenSymbol *sym = s->symbols;
         while (sym)
         {
             if (strcmp(sym->name, n) == 0)
@@ -236,7 +236,7 @@ char *find_symbol_type(ParserContext *ctx, const char *n)
     return NULL;
 }
 
-Symbol *find_symbol_entry(ParserContext *ctx, const char *n)
+ZenSymbol *find_symbol_entry(ParserContext *ctx, const char *n)
 {
     if (!ctx->current_scope)
     {
@@ -245,7 +245,7 @@ Symbol *find_symbol_entry(ParserContext *ctx, const char *n)
     Scope *s = ctx->current_scope;
     while (s)
     {
-        Symbol *sym = s->symbols;
+        ZenSymbol *sym = s->symbols;
         while (sym)
         {
             if (strcmp(sym->name, n) == 0)
@@ -260,9 +260,9 @@ Symbol *find_symbol_entry(ParserContext *ctx, const char *n)
 }
 
 // LSP: Search flat symbol list (works after scopes are destroyed).
-Symbol *find_symbol_in_all(ParserContext *ctx, const char *n)
+ZenSymbol *find_symbol_in_all(ParserContext *ctx, const char *n)
 {
-    Symbol *sym = ctx->all_symbols;
+    ZenSymbol *sym = ctx->all_symbols;
     while (sym)
     {
         if (strcmp(sym->name, n) == 0)
@@ -3423,7 +3423,7 @@ char *find_similar_symbol(ParserContext *ctx, const char *name)
     Scope *s = ctx->current_scope;
     while (s)
     {
-        Symbol *sym = s->symbols;
+        ZenSymbol *sym = s->symbols;
         while (sym)
         {
             int dist = levenshtein(name, sym->name);

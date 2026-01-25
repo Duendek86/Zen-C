@@ -133,7 +133,7 @@ void check_move_usage(ParserContext *ctx, ASTNode *node, Token t)
     }
     if (node->type == NODE_EXPR_VAR)
     {
-        Symbol *sym = find_symbol_entry(ctx, node->var_ref.name);
+        ZenSymbol *sym = find_symbol_entry(ctx, node->var_ref.name);
         if (sym && sym->is_moved)
         {
             zpanic_at(t, "Use of moved value '%s'", node->var_ref.name);
@@ -716,7 +716,7 @@ void analyze_lambda_captures(ParserContext *ctx, ASTNode *lambda)
         int is_found = 0;
         while (s)
         {
-            Symbol *cur = s->symbols;
+            ZenSymbol *cur = s->symbols;
             while (cur)
             {
                 if (0 == strcmp(cur->name, var_name))
@@ -993,7 +993,7 @@ static ASTNode *create_fstring_block(ParserContext *ctx, const char *content)
 
         if (expr_node && expr_node->type == NODE_EXPR_VAR)
         {
-            Symbol *sym = find_symbol_entry(ctx, expr_node->var_ref.name);
+            ZenSymbol *sym = find_symbol_entry(ctx, expr_node->var_ref.name);
             if (sym)
             {
                 sym->is_used = 1;
@@ -2328,7 +2328,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
                         Type *t = find_symbol_type_info(ctx, arg->var_ref.name);
                         if (!t)
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 t = s->type_info;
@@ -2337,7 +2337,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
 
                         if (!is_type_copy(ctx, t))
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 s->is_moved = 1;
@@ -2587,7 +2587,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
                         Type *t = find_symbol_type_info(ctx, arg->var_ref.name);
                         if (!t)
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 t = s->type_info;
@@ -2596,7 +2596,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
 
                         if (!is_type_copy(ctx, t))
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 s->is_moved = 1;
@@ -2647,7 +2647,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
         }
         else
         {
-            Symbol *sym = find_symbol_entry(ctx, acc);
+            ZenSymbol *sym = find_symbol_entry(ctx, acc);
             if (sym && sym->is_def && sym->is_const_value)
             {
                 // Constant Folding for 'def', emits literal
@@ -2998,7 +2998,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
                         Type *t = find_symbol_type_info(ctx, arg->var_ref.name);
                         if (!t)
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 t = s->type_info;
@@ -3007,7 +3007,7 @@ ASTNode *parse_primary(ParserContext *ctx, Lexer *l)
 
                         if (!is_type_copy(ctx, t))
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 s->is_moved = 1;
@@ -3746,7 +3746,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
 
         if (is_token(t, "&") && operand->type == NODE_EXPR_VAR)
         {
-            Symbol *s = find_symbol_entry(ctx, operand->var_ref.name);
+            ZenSymbol *s = find_symbol_entry(ctx, operand->var_ref.name);
             if (s && s->is_def)
             {
                 zpanic_at(t,
@@ -4282,7 +4282,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                         Type *t = find_symbol_type_info(ctx, arg->var_ref.name);
                         if (!t)
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 t = s->type_info;
@@ -4291,7 +4291,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
 
                         if (!is_type_copy(ctx, t))
                         {
-                            Symbol *s = find_symbol_entry(ctx, arg->var_ref.name);
+                            ZenSymbol *s = find_symbol_entry(ctx, arg->var_ref.name);
                             if (s)
                             {
                                 s->is_moved = 1;
@@ -4882,7 +4882,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                 // If type info not on var, try looking up symbol
                 if (!t)
                 {
-                    Symbol *s = find_symbol_entry(ctx, rhs->var_ref.name);
+                    ZenSymbol *s = find_symbol_entry(ctx, rhs->var_ref.name);
                     if (s)
                     {
                         t = s->type_info;
@@ -4891,7 +4891,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
 
                 if (!is_type_copy(ctx, t))
                 {
-                    Symbol *s = find_symbol_entry(ctx, rhs->var_ref.name);
+                    ZenSymbol *s = find_symbol_entry(ctx, rhs->var_ref.name);
                     if (s)
                     {
                         s->is_moved = 1;
@@ -4902,7 +4902,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
             // 3. LHS is being written: Resurrect (it is now valid)
             if (lhs->type == NODE_EXPR_VAR)
             {
-                Symbol *s = find_symbol_entry(ctx, lhs->var_ref.name);
+                ZenSymbol *s = find_symbol_entry(ctx, lhs->var_ref.name);
                 if (s)
                 {
                     s->is_moved = 0;
@@ -5283,7 +5283,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                         // If rhs is a variable reference without type_info, look it up
                         if (!rt && rhs->type == NODE_EXPR_VAR)
                         {
-                            Symbol *sym = find_symbol_entry(ctx, rhs->var_ref.name);
+                            ZenSymbol *sym = find_symbol_entry(ctx, rhs->var_ref.name);
                             if (sym && sym->type_info)
                             {
                                 rt = sym->type_info;
@@ -5341,7 +5341,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
             // Ensure type_info is set for variables (critical for inference)
             if (lhs->type == NODE_EXPR_VAR && !lhs->type_info)
             {
-                Symbol *s = find_symbol_entry(ctx, lhs->var_ref.name);
+                ZenSymbol *s = find_symbol_entry(ctx, lhs->var_ref.name);
                 if (s)
                 {
                     lhs->type_info = s->type_info;
@@ -5349,7 +5349,7 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
             }
             if (rhs->type == NODE_EXPR_VAR && !rhs->type_info)
             {
-                Symbol *s = find_symbol_entry(ctx, rhs->var_ref.name);
+                ZenSymbol *s = find_symbol_entry(ctx, rhs->var_ref.name);
                 if (s)
                 {
                     rhs->type_info = s->type_info;
@@ -5363,10 +5363,10 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                 rhs->type_info->kind != TYPE_UNKNOWN)
             {
                 // Infer LHS type from RHS
-                Symbol *sym = find_symbol_entry(ctx, lhs->var_ref.name);
+                ZenSymbol *sym = find_symbol_entry(ctx, lhs->var_ref.name);
                 if (sym)
                 {
-                    // Update Symbol
+                    // Update ZenSymbol
                     sym->type_info = rhs->type_info;
                     sym->type_name = type_to_string(rhs->type_info);
 
@@ -5382,10 +5382,10 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                 lhs->type_info->kind != TYPE_UNKNOWN)
             {
                 // Infer RHS type from LHS
-                Symbol *sym = find_symbol_entry(ctx, rhs->var_ref.name);
+                ZenSymbol *sym = find_symbol_entry(ctx, rhs->var_ref.name);
                 if (sym)
                 {
-                    // Update Symbol
+                    // Update ZenSymbol
                     sym->type_info = lhs->type_info;
                     sym->type_name = type_to_string(lhs->type_info);
 
@@ -5516,10 +5516,10 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                             rhs->type_info->kind != TYPE_UNKNOWN)
                         {
                             // Infer LHS type from RHS
-                            Symbol *sym = find_symbol_entry(ctx, lhs->var_ref.name);
+                            ZenSymbol *sym = find_symbol_entry(ctx, lhs->var_ref.name);
                             if (sym)
                             {
-                                // Update Symbol
+                                // Update ZenSymbol
                                 sym->type_info = rhs->type_info;
                                 sym->type_name = type_to_string(rhs->type_info);
 
@@ -5538,10 +5538,10 @@ ASTNode *parse_expr_prec(ParserContext *ctx, Lexer *l, Precedence min_prec)
                             lhs->type_info->kind != TYPE_UNKNOWN)
                         {
                             // Infer RHS type from LHS
-                            Symbol *sym = find_symbol_entry(ctx, rhs->var_ref.name);
+                            ZenSymbol *sym = find_symbol_entry(ctx, rhs->var_ref.name);
                             if (sym)
                             {
-                                // Update Symbol
+                                // Update ZenSymbol
                                 sym->type_info = lhs->type_info;
                                 sym->type_name = type_to_string(lhs->type_info);
 
@@ -5637,7 +5637,7 @@ ASTNode *parse_arrow_lambda_single(ParserContext *ctx, Lexer *l, char *param_nam
     }
 
     // Update parameter types from symbol table (in case inference happened)
-    Symbol *sym = find_symbol_entry(ctx, param_name);
+    ZenSymbol *sym = find_symbol_entry(ctx, param_name);
     if (sym && sym->type_info && sym->type_info->kind != TYPE_UNKNOWN)
     {
         free(lambda->lambda.param_types[0]);
