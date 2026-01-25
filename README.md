@@ -148,17 +148,17 @@ Values that exist only at compile-time (folded into code). Use these for array s
 
 ```zc
 def MAX_SIZE = 1024;
-var buffer: char[MAX_SIZE]; // Valid array size
+let buffer: char[MAX_SIZE]; // Valid array size
 ```
 
-#### Variables (`var`)
+#### Variables (`let`)
 Storage locations in memory. Can be mutable or read-only (`const`).
 
 ```zc
-var x = 10;             // Mutable
+let x = 10;             // Mutable
 x = 20;                 // OK
 
-var y: const int = 10;  // Read-only (Type qualified)
+let y: const int = 10;  // Read-only (Type qualified)
 // y = 20;              // Error: cannot assign to const
 ```
 
@@ -183,16 +183,16 @@ var y: const int = 10;  // Read-only (Type qualified)
 Fixed-size arrays with value semantics.
 ```zc
 def SIZE = 5;
-var ints: int[SIZE] = {1, 2, 3, 4, 5};
-var zeros: [int; SIZE]; // Zero-initialized
+let ints: int[SIZE] = {1, 2, 3, 4, 5};
+let zeros: [int; SIZE]; // Zero-initialized
 ```
 
 #### Tuples
 Group multiple values together, access elements by index.
 ```zc
-var pair = (1, "Hello");
-var x = pair.0;  // 1
-var s = pair.1;  // "Hello"
+let pair = (1, "Hello");
+let x = pair.0;  // 1
+let s = pair.1;  // "Hello"
 ```
 
 **Multiple Return Values**
@@ -203,16 +203,16 @@ fn add_and_subtract(a: int, b: int) -> (int, int) {
     return (a + b, a - b);
 }
 
-var result = add_and_subtract(3, 2);
-var sum = result.0;   // 5
-var diff = result.1;  // 1
+let result = add_and_subtract(3, 2);
+let sum = result.0;   // 5
+let diff = result.1;  // 1
 ```
 
 **Destructuring**
 
 Tuples can be destructured directly into variables:
 ```zc
-var (sum, diff) = add_and_subtract(3, 2);
+let (sum, diff) = add_and_subtract(3, 2);
 // sum = 5, diff = 1
 ```
 
@@ -225,7 +225,7 @@ struct Point {
 }
 
 // Struct initialization
-var p = Point { x: 10, y: 20 };
+let p = Point { x: 10, y: 20 };
 
 // Bitfields
 struct Flags {
@@ -315,9 +315,9 @@ fn main() {
 #### Lambdas (Closures)
 Anonymous functions that can capture their environment.
 ```zc
-var factor = 2;
-var double = x -> x * factor;  // Arrow syntax
-var full = fn(x: int) -> int { return x * factor; }; // Block syntax
+let factor = 2;
+let double = x -> x * factor;  // Arrow syntax
+let full = fn(x: int) -> int { return x * factor; }; // Block syntax
 ```
 
 #### Raw Function Pointers
@@ -335,14 +335,14 @@ fn get_callback() -> fn*(int) {
 }
 
 // Pointers to function pointers are supported (fn**)
-var pptr: fn**(int) = &ptr;
+let pptr: fn**(int) = &ptr;
 ```
 
 #### Variadic Functions
 Functions can accept a variable number of arguments using `...` and the `va_list` type.
 ```zc
 fn log(lvl: int, fmt: char*, ...) {
-    var ap: va_list;
+    let ap: va_list;
     va_start(ap, fmt);
     vprintf(fmt, ap); // Use C stdio
     va_end(ap);
@@ -362,7 +362,7 @@ if x > 10 {
 }
 
 // Ternary
-var y = x > 10 ? 1 : 0;
+let y = x > 10 ? 1 : 0;
 ```
 
 #### Pattern Matching
@@ -391,7 +391,7 @@ match shape {
 To inspect a value without taking ownership (moving it), use the `ref` keyword in the pattern. This is essential for types that implement Move Semantics (like `Option`, `Result`, non-Copy structs).
 
 ```zc
-var opt = Some(NonCopyVal{...});
+let opt = Some(NonCopyVal{...});
 match opt {
     Some(ref x) => {
         // 'x' is a pointer to the value inside 'opt'
@@ -461,7 +461,7 @@ impl Point {
     }
 }
 
-var p3 = p1 + p2; // Calls p1.add(p2)
+let p3 = p1 + p2; // Calls p1.add(p2)
 ```
 
 #### Syntactic Sugar
@@ -504,8 +504,8 @@ Zen C allows you to use string literals directly as statements for quick printin
 You can embed expressions directly into string literals using `{}` syntax. This works with all printing methods and string shorthands.
 
 ```zc
-var x = 42;
-var name = "Zen";
+let x = 42;
+let name = "Zen";
 println "Value: {x}, Name: {name}";
 "Value: {x}, Name: {name}"; // shorthand println
 ```
@@ -519,7 +519,7 @@ Zen C supports a shorthand for prompting user input using the `?` prefix.
     - Format specifiers are automatically inferred based on variable type.
 
 ```c
-var age: int;
+let age: int;
 ? "How old are you? " (age);
 println "You are {age} years old.";
 ```
@@ -531,7 +531,7 @@ Zen C allows manual memory management with ergonomic aids.
 #### Defer
 Execute code when the current scope exits. Defer statements are executed in LIFO (last-in, first-out) order.
 ```zc
-var f = fopen("file.txt", "r");
+let f = fopen("file.txt", "r");
 defer fclose(f);
 ```
 
@@ -540,7 +540,7 @@ defer fclose(f);
 #### Autofree
 Automatically free the variable when scope exits.
 ```zc
-autofree var types = malloc(1024);
+autofree let types = malloc(1024);
 ```
 
 #### Resource Semantics (Move by Default)
@@ -566,7 +566,7 @@ fn peek(r: Resource*) { ... }   // 'r' is borrowed (reference)
 If you *do* want two copies of a resource, make it explicit:
 
 ```zc
-var b = a.clone(); // Calls the 'clone' method from the Clone trait
+let b = a.clone(); // Calls the 'clone' method from the Clone trait
 ```
 
 **Opt-in Copy (Value Types)**:
@@ -577,8 +577,8 @@ struct Point { x: int; y: int; }
 impl Copy for Point {} // Opt-in to implicit duplication
 
 fn main() {
-    var p1 = Point { x: 1, y: 2 };
-    var p2 = p1; // Copied. p1 stays valid.
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = p1; // Copied. p1 stays valid.
 }
 ```
 
@@ -623,8 +623,8 @@ impl Drawable for Circle {
     fn draw(self) { ... }
 }
 
-var circle = Circle{};
-var drawable: Drawable = &circle;
+let circle = Circle{};
+let drawable: Drawable = &circle;
 ```
 
 #### Standard Traits
@@ -699,8 +699,8 @@ Marker trait to opt-in to `Copy` behavior (implicit duplication) instead of Move
 struct Point { x: int; y: int; }
 
 fn main() {
-    var p1 = Point{x: 1, y: 2};
-    var p2 = p1; // Copied! p1 remains valid.
+    let p1 = Point{x: 1, y: 2};
+    let p2 = p1; // Copied! p1 remains valid.
 }
 ```
 
@@ -720,8 +720,8 @@ impl Clone for MyBox {
 }
 
 fn main() {
-    var b1 = MyBox{val: 42};
-    var b2 = b1.clone(); // Explicit copy
+    let b1 = MyBox{val: 42};
+    let b2 = b1.clone(); // Explicit copy
 }
 ```
 
@@ -777,8 +777,8 @@ async fn fetch_data() -> string {
 }
 
 fn main() {
-    var future = fetch_data();
-    var result = await future;
+    let future = fetch_data();
+    let result = await future;
 }
 ```
 
@@ -789,7 +789,7 @@ Run code at compile-time to generate source or print messages.
 ```zc
 comptime {
     // Generate code at compile-time (written to stdout)
-    println "var build_date = \"2024-01-01\";";
+    println "let build_date = \"2024-01-01\";";
 }
 
 println "Build Date: {build_date}";
@@ -799,19 +799,19 @@ println "Build Date: {build_date}";
 Embed files as specified types.
 ```zc
 // Default (Slice_char)
-var data = embed "assets/logo.png";
+let data = embed "assets/logo.png";
 
 // Typed Embed
-var text = embed "shader.glsl" as string;    // Embbed as C-string
-var rom  = embed "bios.bin" as u8[1024];     // Embed as fixed array
-var wav  = embed "sound.wav" as u8[];        // Embed as Slice_u8
+let text = embed "shader.glsl" as string;    // Embbed as C-string
+let rom  = embed "bios.bin" as u8[1024];     // Embed as fixed array
+let wav  = embed "sound.wav" as u8[];        // Embed as Slice_u8
 ```
 
 #### Plugins
 Import compiler plugins to extend syntax.
 ```zc
 import plugin "regex"
-var re = regex! { ^[a-z]+$ };
+let re = regex! { ^[a-z]+$ };
 ```
 
 #### Generic C Macros
@@ -876,11 +876,11 @@ asm volatile {
 Zen C simplifies the complex GCC constraint syntax with named bindings.
 
 ```zc
-// Syntax: : out(var) : in(var) : clobber(reg)
-// Uses {var} placeholder syntax for readability
+// Syntax: : out(variable) : in(variable) : clobber(reg)
+// Uses {variable} placeholder syntax for readability
 
 fn add(a: int, b: int) -> int {
-    var result: int;
+    let result: int;
     asm {
         "add {result}, {a}, {b}"
         : out(result)
@@ -893,8 +893,8 @@ fn add(a: int, b: int) -> int {
 
 | Type | Syntax | GCC Equivalent |
 |:---|:---|:---|
-| **Output** | `: out(var)` | `"=r"(var)` |
-| **Input** | `: in(var)` | `"r"(var)` |
+| **Output** | `: out(variable)` | `"=r"(variable)` |
+| **Input** | `: in(variable)` | `"r"(variable)` |
 | **Clobber** | `: clobber("rax")` | `"rax"` |
 | **Memory** | `: clobber("memory")` | `"memory"` |
 
@@ -1080,7 +1080,7 @@ raw {
 }
 
 fn main() {
-    var v = make_vec(1, 2);
+    let v = make_vec(1, 2);
     raw { std::cout << "Size: " << v.size() << std::endl; }
 }
 ```
@@ -1132,7 +1132,7 @@ import "std/cuda.zc"
 
 @global
 fn add_kernel(a: float*, b: float*, c: float*, n: int) {
-    var i = thread_id();
+    let i = thread_id();
     if i < n {
         c[i] = a[i] + b[i];
     }
@@ -1140,9 +1140,9 @@ fn add_kernel(a: float*, b: float*, c: float*, n: int) {
 
 fn main() {
     const N = 1024;
-    var d_a = cuda_alloc<float>(N);
-    var d_b = cuda_alloc<float>(N); 
-    var d_c = cuda_alloc<float>(N);
+    let d_a = cuda_alloc<float>(N);
+    let d_b = cuda_alloc<float>(N); 
+    let d_c = cuda_alloc<float>(N);
     defer cuda_free(d_a);
     defer cuda_free(d_b);
     defer cuda_free(d_c);
@@ -1165,7 +1165,7 @@ Zen C provides a standard library for common CUDA operations to reduce `raw` blo
 import "std/cuda.zc"
 
 // Memory management
-var d_ptr = cuda_alloc<float>(1024);
+let d_ptr = cuda_alloc<float>(1024);
 cuda_copy_to_device(d_ptr, h_ptr, 1024 * sizeof(float));
 defer cuda_free(d_ptr);
 
@@ -1173,9 +1173,9 @@ defer cuda_free(d_ptr);
 cuda_sync();
 
 // Thread Indexing (use inside kernels)
-var i = thread_id(); // Global index
-var bid = block_id();
-var tid = local_id();
+let i = thread_id(); // Global index
+let bid = block_id();
+let tid = local_id();
 ```
 
 

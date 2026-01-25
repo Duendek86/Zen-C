@@ -1,7 +1,7 @@
 import "../../std/mem.zc"
 
 // Global to track destructor calls
-var DTOR_COUNT = 0;
+let DTOR_COUNT = 0;
 
 struct Buffer {
     data: int*;
@@ -23,9 +23,9 @@ test "drop_flags_variable_move" {
     DTOR_COUNT = 0;
     {
         println "Init";
-        var buffer = Buffer { data: malloc(100) };
+        let buffer = Buffer { data: malloc(100) };
         println "Moved";
-        var buf = buffer;  // Move occurs
+        let buf = buffer;  // Move occurs
         // buffer is moved-from. Flag should prevent destructor.
         // buf owns data.
     }

@@ -16,12 +16,12 @@ test "raw_func_ptr_basic" {
 }
 
 test "raw_func_ptr_return_explicit" {
-    var p: fn*(char*) = get_printer();
+    let p: fn*(char*) = get_printer();
     p("Returned Ptr Explicit works");
 }
 
 test "fn_ptr_ptr" {
-    var p: fn*(char*) = print_msg;
-    var pp: fn**(char*) = &p;
+    let p: fn*(char*) = print_msg;
+    let pp: fn**(char*) = &p;
     (*pp)("Double Pointer works");
 }

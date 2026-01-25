@@ -14,8 +14,8 @@ impl MyClone for GBox<T> {
 }
 
 test "generic_trait_method_resolution" {
-    var b = GBox<int>{ val: 10 };
-    var res = b.my_clone();
+    let b = GBox<int>{ val: 10 };
+    let res = b.my_clone();
     assert(res == 1, "Generic trait method call failed");
 }
 
@@ -34,9 +34,9 @@ impl ValueProvider for Wrapper<T> {
 }
 
 test "generic_trait_resolution_complex" {
-    var w = Wrapper<bool>{ inner: true };
+    let w = Wrapper<bool>{ inner: true };
     assert(w.get_value() == 42, "Wrapper<bool> trait call failed");
     
-    var w2 = Wrapper<int>{ inner: 100 };
+    let w2 = Wrapper<int>{ inner: 100 };
     assert(w2.get_value() == 42, "Wrapper<int> trait call failed");
 }
