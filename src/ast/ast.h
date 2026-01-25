@@ -64,6 +64,7 @@ typedef struct Type
     int arg_count;
     int is_const;
     int is_explicit_struct; // for example, "struct Foo" vs "Foo"
+    int is_raw;             // Raw function pointer (fn*)
     union
     {
         int array_size;  // For fixed-size arrays [T; N].

@@ -337,18 +337,18 @@ ASTNode *parse_program_nodes(ParserContext *ctx, Lexer *l)
             {
                 s = parse_import(ctx, l);
             }
-            else if (t.len == 3 && strncmp(t.start, "var", 3) == 0)
+            else if (t.len == 3 && strncmp(t.start, "let", 3) == 0)
             {
                 s = parse_var_decl(ctx, l);
             }
-            else if (t.len == 3 && strncmp(t.start, "def", 3) == 0)
+            else if (t.len == 3 && strncmp(t.start, "var", 3) == 0)
             {
-                s = parse_def(ctx, l);
+                zpanic_at(t, "'var' is deprecated. Use 'let' instead.");
             }
             else if (t.len == 5 && strncmp(t.start, "const", 5) == 0)
             {
                 zpanic_at(t, "'const' for declarations is deprecated. Use 'def' for constants or "
-                             "'var x: const T' for read-only variables.");
+                             "'let x: const T' for read-only variables.");
             }
             else if (t.len == 6 && strncmp(t.start, "extern", 6) == 0)
             {
@@ -673,23 +673,23 @@ static ASTNode *generate_derive_impls(ParserContext *ctx, ASTNode *strct, char *
                     // Map types to appropriate get_* calls
                     if (strcmp(ft, "int") == 0)
                     {
-                        sprintf(assign, "var _f_%s = (*j).get_int(\"%s\").unwrap_or(0);\n", fn, fn);
+                        sprintf(assign, "let _f_%s = (*j).get_int(\"%s\").unwrap_or(0);\n", fn, fn);
                     }
                     else if (strcmp(ft, "double") == 0)
                     {
-                        sprintf(assign, "var _f_%s = (*j).get_float(\"%s\").unwrap_or(0.0);\n", fn, fn);
+                        sprintf(assign, "let _f_%s = (*j).get_float(\"%s\").unwrap_or(0.0);\n", fn, fn);
                     }
                     else if (strcmp(ft, "bool") == 0)
                     {
-                        sprintf(assign, "var _f_%s = (*j).get_bool(\"%s\").unwrap_or(false);\n", fn, fn);
+                        sprintf(assign, "let _f_%s = (*j).get_bool(\"%s\").unwrap_or(false);\n", fn, fn);
                     }
                     else if (strcmp(ft, "char*") == 0)
                     {
-                        sprintf(assign, "var _f_%s = (*j).get_string(\"%s\").unwrap_or(\"\");\n", fn, fn);
+                        sprintf(assign, "let _f_%s = (*j).get_string(\"%s\").unwrap_or(\"\");\n", fn, fn);
                     }
                     else if (strcmp(ft, "String") == 0)
                     {
-                        sprintf(assign, "var _f_%s = String::new((*j).get_string(\"%s\").unwrap_or(\"\"));\n", fn, fn);
+                        sprintf(assign, "let _f_%s = String::new((*j).get_string(\"%s\").unwrap_or(\"\"));\n", fn, fn);
                     }
                     else if (ft && strstr(ft, "Vec") && strstr(ft, "String"))
                     {
@@ -699,16 +699,16 @@ static ASTNode *generate_derive_impls(ParserContext *ctx, ASTNode *strct, char *
                             vec_fields[vec_field_count++] = fn;
                         }
                         sprintf(assign,
-                            "var _f_%s = Vec<String>::new();\n"
-                            "var _arr_%s = (*j).get_array(\"%s\");\n"
+                            "let _f_%s = Vec<String>::new();\n"
+                            "let _arr_%s = (*j).get_array(\"%s\");\n"
                             "if _arr_%s.is_some() {\n"
-                            "  var _a_%s = _arr_%s.unwrap();\n"
-                            "  for var _i_%s: usize = 0; _i_%s < _a_%s.len(); _i_%s = _i_%s + 1 {\n"
-                            "    var _item_%s = _a_%s.at(_i_%s);\n"
+                            "  let _a_%s = _arr_%s.unwrap();\n"
+                            "  for let _i_%s: usize = 0; _i_%s < _a_%s.len(); _i_%s = _i_%s + 1 {\n"
+                            "    let _item_%s = _a_%s.at(_i_%s);\n"
                             "    if _item_%s.is_some() {\n"
-                            "      var _str_%s = (*_item_%s.unwrap()).as_string();\n"
+                            "      let _str_%s = (*_item_%s.unwrap()).as_string();\n"
                             "      if _str_%s.is_some() {\n"
-                            "        var _s_%s = String::new(_str_%s.unwrap());\n"
+                            "        let _s_%s = String::new(_str_%s.unwrap());\n"
                             "        _f_%s.push(_s_%s); _s_%s.forget();\n"
                             "      }\n"
                             "    }\n"
@@ -720,8 +720,8 @@ static ASTNode *generate_derive_impls(ParserContext *ctx, ASTNode *strct, char *
                     {
                         // Nested struct: call NestedType::from_json recursively
                         sprintf(assign,
-                            "var _opt_%s = (*j).get(\"%s\");\n"
-                            "var _f_%s: %s;\n"
+                            "let _opt_%s = (*j).get(\"%s\");\n"
+                            "let _f_%s: %s;\n"
                             "if _opt_%s.is_some() { _f_%s = %s::from_json(_opt_%s.unwrap()).unwrap(); }\n",
                             fn, fn, fn, ft, fn, fn, ft, fn);
                     }
@@ -786,7 +786,7 @@ static ASTNode *generate_derive_impls(ParserContext *ctx, ASTNode *strct, char *
             }
 
             char body[8192];
-            strcpy(body, "var _obj = JsonValue::object();\n");
+            strcpy(body, "let _obj = JsonValue::object();\n");
 
             ASTNode *f = strct->strct.fields;
             while (f)
@@ -826,8 +826,8 @@ static ASTNode *generate_derive_impls(ParserContext *ctx, ASTNode *strct, char *
                     else if (ft && strstr(ft, "Vec") && strstr(ft, "String"))
                     {
                         sprintf(set_call,
-                            "var _arr_%s = JsonValue::array();\n"
-                            "for var _i_%s: usize = 0; _i_%s < self.%s.length(); _i_%s = _i_%s + 1 {\n"
+                            "let _arr_%s = JsonValue::array();\n"
+                            "for let _i_%s: usize = 0; _i_%s < self.%s.length(); _i_%s = _i_%s + 1 {\n"
                             "  _arr_%s.push(JsonValue::string(self.%s.get(_i_%s).c_str()));\n"
                             "}\n"
                             "_obj.set(\"%s\", _arr_%s);\n",

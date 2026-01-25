@@ -549,7 +549,8 @@ void codegen_expression(ParserContext *ctx, ASTNode *node, FILE *out)
             }
         }
 
-        if (node->call.callee->type_info && node->call.callee->type_info->kind == TYPE_FUNCTION)
+        if (node->call.callee->type_info && node->call.callee->type_info->kind == TYPE_FUNCTION &&
+            !node->call.callee->type_info->is_raw)
         {
             fprintf(out, "({ z_closure_T _c = ");
             codegen_expression(ctx, node->call.callee, out);

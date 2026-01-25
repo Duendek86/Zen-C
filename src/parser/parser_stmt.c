@@ -1278,9 +1278,13 @@ ASTNode *parse_for(ParserContext *ctx, Lexer *l)
     ASTNode *init = NULL;
     if (lexer_peek(l).type != TOK_SEMICOLON)
     {
-        if (lexer_peek(l).type == TOK_IDENT && strncmp(lexer_peek(l).start, "var", 3) == 0)
+        if (lexer_peek(l).type == TOK_IDENT && strncmp(lexer_peek(l).start, "let", 3) == 0)
         {
             init = parse_var_decl(ctx, l);
+        }
+        else if (lexer_peek(l).type == TOK_IDENT && strncmp(lexer_peek(l).start, "var", 3) == 0)
+        {
+            zpanic_at(lexer_peek(l), "'var' is deprecated. Use 'let' instead.");
         }
         else
         {
@@ -1936,9 +1940,9 @@ ASTNode *parse_statement(ParserContext *ctx, Lexer *l)
     if (tk.type == TOK_AUTOFREE)
     {
         lexer_next(l);
-        if (lexer_peek(l).type != TOK_IDENT || strncmp(lexer_peek(l).start, "var", 3) != 0)
+        if (lexer_peek(l).type != TOK_IDENT || strncmp(lexer_peek(l).start, "let", 3) != 0)
         {
-            zpanic_at(lexer_peek(l), "Expected 'var' after autofree");
+            zpanic_at(lexer_peek(l), "Expected 'let' after autofree");
         }
         s = parse_var_decl(ctx, l);
         s->var_decl.is_autofree = 1;
@@ -2077,28 +2081,33 @@ ASTNode *parse_statement(ParserContext *ctx, Lexer *l)
             return parse_plugin(ctx, l);
         }
 
-        if (strncmp(tk.start, "var", 3) == 0 && tk.len == 3)
+        if (strncmp(tk.start, "let", 3) == 0 && tk.len == 3)
         {
             return parse_var_decl(ctx, l);
         }
 
-        // Static local variable: static var x = 0;
+        if (strncmp(tk.start, "var", 3) == 0 && tk.len == 3)
+        {
+            zpanic_at(tk, "'var' is deprecated. Use 'let' instead.");
+        }
+
+        // Static local variable: static let x = 0;
         if (strncmp(tk.start, "static", 6) == 0 && tk.len == 6)
         {
             lexer_next(l); // eat 'static'
             Token next = lexer_peek(l);
-            if (strncmp(next.start, "var", 3) == 0 && next.len == 3)
+            if (strncmp(next.start, "let", 3) == 0 && next.len == 3)
             {
                 ASTNode *v = parse_var_decl(ctx, l);
                 v->var_decl.is_static = 1;
                 return v;
             }
-            zpanic_at(next, "Expected 'var' after 'static'");
+            zpanic_at(next, "Expected 'let' after 'static'");
         }
 
         if (strncmp(tk.start, "const", 5) == 0 && tk.len == 5)
         {
-            zpanic_at(tk, "'const' for declarations is deprecated. Use 'def' for constants or 'var "
+            zpanic_at(tk, "'const' for declarations is deprecated. Use 'def' for constants or 'let "
                           "x: const T' for read-only variables.");
         }
         if (strncmp(tk.start, "return", 6) == 0 && tk.len == 6)

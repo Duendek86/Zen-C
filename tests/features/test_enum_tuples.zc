@@ -5,9 +5,9 @@ enum Shape {
 }
 
 fn main() {
-    var r = Shape.Rect(10.0, 20.0);
+    let r = Shape.Rect(10.0, 20.0);
     
-    var matched = 0;
+    let matched = 0;
     match r {
         Shape::Rect(w, h) => {
             assert(w == 10.0, "w == 10.0");
@@ -20,7 +20,7 @@ fn main() {
     }
     assert(matched == 1, "Matched Rect");
 
-    var c = Shape.Circle(5.0);
+    let c = Shape.Circle(5.0);
     match c {
         Shape::Circle(val) => {
             assert(val == 5.0, "val == 5.0");

@@ -40,19 +40,33 @@ char *strip_template_suffix(const char *name)
     return xstrdup(name);
 }
 
-// Helper to emit variable declarations with array types.
-void emit_var_decl_type(ParserContext *ctx, FILE *out, const char *type_str, const char *var_name)
+// Helper to emit C declaration (handle arrays, function pointers correctly)
+void emit_c_decl(FILE *out, const char *type_str, const char *name)
 {
-    (void)ctx;
-
     char *bracket = strchr(type_str, '[');
     char *generic = strchr(type_str, '<');
+    char *fn_ptr = strstr(type_str, "(*");
 
-    if (generic && (!bracket || generic < bracket))
+    if (fn_ptr)
+    {
+        char *end_paren = strchr(fn_ptr, ')');
+        if (end_paren)
+        {
+            int prefix_len = end_paren - type_str;
+            fprintf(out, "%.*s%s%s", prefix_len, type_str, name, end_paren);
+        }
+        else
+        {
+            // Fallback if malformed (shouldn't happen)
+            int prefix_len = fn_ptr - type_str + 2;
+            fprintf(out, "%.*s%s%s", prefix_len, type_str, name, fn_ptr + 2);
+        }
+    }
+    else if (generic && (!bracket || generic < bracket))
     {
         // Strip generic part for C output
         int base_len = generic - type_str;
-        fprintf(out, "%.*s %s", base_len, type_str, var_name);
+        fprintf(out, "%.*s %s", base_len, type_str, name);
 
         if (bracket)
         {
@@ -62,12 +76,19 @@ void emit_var_decl_type(ParserContext *ctx, FILE *out, const char *type_str, con
     else if (bracket)
     {
         int base_len = bracket - type_str;
-        fprintf(out, "%.*s %s%s", base_len, type_str, var_name, bracket);
+        fprintf(out, "%.*s %s%s", base_len, type_str, name, bracket);
     }
     else
     {
-        fprintf(out, "%s %s", type_str, var_name);
+        fprintf(out, "%s %s", type_str, name);
     }
+}
+
+// Helper to emit variable declarations with array types.
+void emit_var_decl_type(ParserContext *ctx, FILE *out, const char *type_str, const char *var_name)
+{
+    (void)ctx;
+    emit_c_decl(out, type_str, var_name);
 }
 
 // Find struct definition
@@ -649,7 +670,20 @@ void emit_func_signature(FILE *out, ASTNode *func, const char *name_override)
         ret_str = xstrdup("void");
     }
 
-    fprintf(out, "%s %s(", ret_str, name_override ? name_override : func->func.name);
+    char *ret_suffix = NULL;
+    char *fn_ptr = strstr(ret_str, "(*)");
+
+    if (fn_ptr)
+    {
+        int prefix_len = fn_ptr - ret_str + 2; // Include "(*"
+        fprintf(out, "%.*s%s(", prefix_len, ret_str,
+                name_override ? name_override : func->func.name);
+        ret_suffix = fn_ptr + 2;
+    }
+    else
+    {
+        fprintf(out, "%s %s(", ret_str, name_override ? name_override : func->func.name);
+    }
     free(ret_str);
 
     // Args
@@ -683,16 +717,7 @@ void emit_func_signature(FILE *out, ASTNode *func, const char *name_override)
             }
 
             // check if array type
-            char *bracket = strchr(type_str, '[');
-            if (bracket)
-            {
-                int base_len = bracket - type_str;
-                fprintf(out, "%.*s %s%s", base_len, type_str, name, bracket);
-            }
-            else
-            {
-                fprintf(out, "%s %s", type_str, name);
-            }
+            emit_c_decl(out, type_str, name);
             free(type_str);
         }
         if (func->func.is_varargs)
@@ -705,6 +730,11 @@ void emit_func_signature(FILE *out, ASTNode *func, const char *name_override)
         }
     }
     fprintf(out, ")");
+
+    if (ret_suffix)
+    {
+        fprintf(out, "%s", ret_suffix);
+    }
 }
 
 // Invalidate a moved-from variable by zeroing it out to prevent double-free

@@ -1,8 +1,8 @@
 import "../../std/mem.zc"
 
 // Global counters to track drop calls
-var DROP_COUNT = 0;
-var DROP_NULL_COUNT = 0;
+let DROP_COUNT = 0;
+let DROP_NULL_COUNT = 0;
 
 struct Resource {
     data: int*;
@@ -32,8 +32,8 @@ test "move_variable" {
     DROP_NULL_COUNT = 0;
     
     {
-        var r1 = Resource { data: malloc(10), id: 1 };
-        var r2 = r1; // Move
+        let r1 = Resource { data: malloc(10), id: 1 };
+        let r2 = r1; // Move
         
         // r1 should be nullified
         // r2 owns data
@@ -52,8 +52,8 @@ test "move_function" {
     DROP_NULL_COUNT = 0;
 
     {
-        var r1 = Resource { data: malloc(10), id: 2 };
-        var r2 = pass_through(r1); 
+        let r1 = Resource { data: malloc(10), id: 2 };
+        let r2 = pass_through(r1); 
         // r1 moved to arg -> moved to return -> moved to r2
     }
     
@@ -73,8 +73,8 @@ test "partial_move_member" {
     DROP_NULL_COUNT = 0;
 
     {
-        var c = Container { res: Resource { data: malloc(10), id: 3 } };
-        var r = c.res; // Partial move
+        let c = Container { res: Resource { data: malloc(10), id: 3 } };
+        let r = c.res; // Partial move
         
         // c.res should be nullified
         // r owns data

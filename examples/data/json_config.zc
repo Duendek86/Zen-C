@@ -23,46 +23,46 @@ struct Config {
 }
 
 fn main() {
-    var path = "examples/data/config.json";
+    let path = "examples/data/config.json";
     
-    var content_res = File::read_all(path);
+    let content_res = File::read_all(path);
     if content_res.is_err() {
         !"Failed to read config file: {content_res.err}";
         return 1;
     }
 
-    var json_str = content_res.unwrap();
-    var parse_res = JsonValue::parse(json_str.c_str());
+    let json_str = content_res.unwrap();
+    let parse_res = JsonValue::parse(json_str.c_str());
     if parse_res.is_err() {
         !"JSON Parse Error";
         json_str.free();
         return 1;
     }
 
-    var root = parse_res.unwrap();
+    let root = parse_res.unwrap();
 
     // ============================================
     // Demo 1: Using accessor methods
     // ============================================
     "=== Accessor methods ===";
 
-    var server_opt = (*root).get_string("server_name");
-    var server = server_opt.unwrap_or("default");
+    let server_opt = (*root).get_string("server_name");
+    let server = server_opt.unwrap_or("default");
 
-    var port_opt = (*root).get_int("port");
-    var port = port_opt.unwrap_or(8080);
+    let port_opt = (*root).get_int("port");
+    let port = port_opt.unwrap_or(8080);
 
-    var max_conn_opt = (*root).get_int("max_connections");
-    var max_conn = max_conn_opt.unwrap_or(10);
+    let max_conn_opt = (*root).get_int("max_connections");
+    let max_conn = max_conn_opt.unwrap_or(10);
 
-    var logging = false;
-    var metrics = false;
-    var features_opt = (*root).get_object("features");
+    let logging = false;
+    let metrics = false;
+    let features_opt = (*root).get_object("features");
     if features_opt.is_some() {
-        var features = features_opt.unwrap();
-        var logging_opt = features.get_bool("logging");
+        let features = features_opt.unwrap();
+        let logging_opt = features.get_bool("logging");
         logging = logging_opt.unwrap_or(false);
-        var metrics_opt = features.get_bool("metrics");
+        let metrics_opt = features.get_bool("metrics");
         metrics = metrics_opt.unwrap_or(false);
     }
 
@@ -73,18 +73,18 @@ fn main() {
     "Metrics:         {metrics}";
 
     // Reading array: allowed_hosts
-    var hosts_opt = (*root).get_array("allowed_hosts");
+    let hosts_opt = (*root).get_array("allowed_hosts");
     if hosts_opt.is_some() {
-        var hosts = hosts_opt.unwrap();
-        var count = hosts.len();
+        let hosts = hosts_opt.unwrap();
+        let count = hosts.len();
         "Allowed Hosts:   ({count} entries)";
-        for var i: usize = 0; i < count; i = i + 1 {
-            var host_opt = hosts.at(i);
+        for let i: usize = 0; i < count; i = i + 1 {
+            let host_opt = hosts.at(i);
             if host_opt.is_some() {
-                var host_val = host_opt.unwrap();
-                var host_str = (*host_val).as_string();
+                let host_val = host_opt.unwrap();
+                let host_str = (*host_val).as_string();
                 if host_str.is_some() {
-                    var h = host_str.unwrap();
+                    let h = host_str.unwrap();
                     "  - {h}";
                 }
             }
@@ -97,46 +97,46 @@ fn main() {
     "";
     "=== @derive(FromJson, ToJson) ===";
 
-    var config_res = Config::from_json(root);
-    var config = config_res.unwrap();
+    let config_res = Config::from_json(root);
+    let config = config_res.unwrap();
 
-    var s_name = config.server_name.c_str();
+    let s_name = config.server_name.c_str();
     "Config from JSON:";
     "  server_name:     {s_name}";
     "  port:            {config.port}";
     "  max_connections: {config.max_connections}";
     "  features.logging: {config.features.logging}";
     "  features.metrics: {config.features.metrics}";
-    var hosts_count = config.allowed_hosts.length();
+    let hosts_count = config.allowed_hosts.length();
     "  allowed_hosts:   ({hosts_count} entries)";
-    for var i: usize = 0; i < hosts_count; i = i + 1 {
-        var host = config.allowed_hosts.get(i).c_str();
+    for let i: usize = 0; i < hosts_count; i = i + 1 {
+        let host = config.allowed_hosts.get(i).c_str();
         "    - {host}";
     }
 
     // Serialize back to JSON
-    var json_out = config.to_json();
+    let json_out = config.to_json();
 
-    var out_name_opt = json_out.get_string("server_name");
-    var out_name = out_name_opt.unwrap_or("?");
+    let out_name_opt = json_out.get_string("server_name");
+    let out_name = out_name_opt.unwrap_or("?");
 
-    var out_port_opt = json_out.get_int("port");
-    var out_port = out_port_opt.unwrap_or(0);
+    let out_port_opt = json_out.get_int("port");
+    let out_port = out_port_opt.unwrap_or(0);
 
-    var out_features_opt = json_out.get_object("features");
-    var out_logging = false;
-    var out_metrics = false;
+    let out_features_opt = json_out.get_object("features");
+    let out_logging = false;
+    let out_metrics = false;
     if out_features_opt.is_some() {
-        var out_features = out_features_opt.unwrap();
-        var logging_opt = out_features.get_bool("logging");
+        let out_features = out_features_opt.unwrap();
+        let logging_opt = out_features.get_bool("logging");
         out_logging = logging_opt.unwrap_or(false);
-        var metrics_opt = out_features.get_bool("metrics");
+        let metrics_opt = out_features.get_bool("metrics");
         out_metrics = metrics_opt.unwrap_or(false);
     }
 
     // Check allowed_hosts in serialized output
-    var out_hosts_opt = json_out.get_array("allowed_hosts");
-    var out_hosts_count: usize = 0;
+    let out_hosts_opt = json_out.get_array("allowed_hosts");
+    let out_hosts_count: usize = 0;
     if out_hosts_opt.is_some() {
         out_hosts_count = out_hosts_opt.unwrap().len();
     }
@@ -151,7 +151,7 @@ fn main() {
 
     // Cleanup
     config.server_name.free();
-    for var i: usize = 0; i < config.allowed_hosts.length(); i = i + 1 {
+    for let i: usize = 0; i < config.allowed_hosts.length(); i = i + 1 {
         config.allowed_hosts.get(i).free();
     }
     config.allowed_hosts.free();
