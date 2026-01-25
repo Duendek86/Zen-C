@@ -114,6 +114,29 @@ make
 sudo make install
 ```
 
+### Portable Build (APE)
+
+Zen C can be compiled as an **Actually Portable Executable (APE)** using [Cosmopolitan Libc](https://github.com/jart/cosmopolitan). This produces a single binary (`.com`) that runs natively on Linux, macOS, Windows, FreeBSD, OpenBSD, and NetBSD on both x86_64 and aarch64 architectures.
+
+**Prerequisites:**
+- `cosmocc` toolchain (must be in your PATH)
+
+**Build & Install:**
+```bash
+make ape
+sudo env "PATH=$PATH" make install-ape
+```
+
+**Artifacts:**
+- `out/bin/zc.com`: The portable Zen-C compiler. Includes the standard library embedded within the executable.
+- `out/bin/zc-boot.com`: A self-contained bootstrap installer for setting up new Zen-C projects.
+
+**Usage:**
+```bash
+# Run on any supported OS
+./out/bin/zc.com build hello.zc -o hello
+```
+
 ### Usage
 
 ```bash
@@ -1223,5 +1246,8 @@ make test
 
 This project uses the following third-party libraries:
 
-*   **cJSON** (MIT License): Used for JSON parsing and generation in the Language Server.
+
+*   **[cJSON](https://github.com/DaveGamble/cJSON)** (MIT License): Used for JSON parsing and generation in the Language Server.
     *   Copyright (c) 2009-2017 Dave Gamble and cJSON contributors
+*   **[zc-ape](https://github.com/OEvgeny/zc-ape)** (MIT License): The original Actually Portable Executable port of Zen-C. The APE integration in this repository is based on this work by [OEvgeny](https://github.com/OEvgeny).
+*   **[Cosmopolitan Libc](https://github.com/jart/cosmopolitan)** (ISC License): The foundational library that makes APE possible.

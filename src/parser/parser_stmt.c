@@ -3179,8 +3179,16 @@ char *run_comptime_block(ParserContext *ctx, Lexer *l)
 
     char cmd[4096];
     char bin[1024];
+#ifdef _WIN32
+    sprintf(bin, "%s.exe", filename);
+#else
     sprintf(bin, "%s.bin", filename);
-    sprintf(cmd, "gcc %s -o %s > /dev/null 2>&1", filename, bin);
+#endif
+    sprintf(cmd, "%s %s -o %s", g_config.cc, filename, bin);
+    if (!g_config.verbose)
+    {
+        strcat(cmd, " > /dev/null 2>&1");
+    }
     int res = system(cmd);
     if (res != 0)
     {
@@ -3189,7 +3197,14 @@ char *run_comptime_block(ParserContext *ctx, Lexer *l)
 
     char out_file[1024];
     sprintf(out_file, "%s.out", filename);
+
+    // Platform-neutral execution
+#ifdef _WIN32
+    sprintf(cmd, "%s > %s", bin, out_file);
+#else
     sprintf(cmd, "./%s > %s", bin, out_file);
+#endif
+
     if (system(cmd) != 0)
     {
         zpanic_at(lexer_peek(l), "Comptime execution failed");

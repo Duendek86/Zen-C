@@ -18,3 +18,4 @@ vgcore.*
 tests/**/*.o
 plugins/*.so
 .cache
+out/

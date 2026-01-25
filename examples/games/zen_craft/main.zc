@@ -3,20 +3,20 @@
 import "raylib.h" as rl;
 import "math.h";
 
-const SCREEN_WIDTH = 800;
-const SCREEN_HEIGHT = 450;
-const TITLE = "Zen Craft";
+def SCREEN_WIDTH = 800;
+def SCREEN_HEIGHT = 450;
+def TITLE = "Zen Craft";
 
 // Block Types (Enum)
-const BLOCK_AIR = 0;
-const BLOCK_DIRT = 1;
-const BLOCK_GRASS = 2;
-const BLOCK_STONE = 3;
+def BLOCK_AIR = 0;
+def BLOCK_DIRT = 1;
+def BLOCK_GRASS = 2;
+def BLOCK_STONE = 3;
 
 // Physics Constants
-const GRAVITY = 18.0;
-const JUMP_FORCE = 8.0;
-const MOVE_SPEED = 5.0;
+def GRAVITY = 18.0;
+def JUMP_FORCE = 8.0;
+def MOVE_SPEED = 5.0;
 
 // ** World / Chunk **
 
@@ -413,7 +413,7 @@ impl Player {
 fn main() {
     rl::InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, TITLE);
     rl::SetWindowState(rl::FLAG_WINDOW_RESIZABLE);
-    defer rl::CloseWindow();
+    defer { rl::CloseWindow(); }
 
     rl::SetTargetFPS(60);
 
