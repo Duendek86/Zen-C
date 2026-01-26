@@ -24,6 +24,7 @@ jobs:
         run: |
           mkdir public
           mv docs public/
+          cp README.md public/
 
       - name: Deploy to z-libs/Zen-C-Docs
         uses: peaceiris/actions-gh-pages@v3
