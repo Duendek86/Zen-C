@@ -458,8 +458,6 @@ impl Drop for JsonValue {
     }
 }
 
-extern fn sprintf(s: char*, fmt: const char*, ...) -> int;
-
 impl JsonValue {
     fn to_string(self) -> String {
         let s = String::new("");
