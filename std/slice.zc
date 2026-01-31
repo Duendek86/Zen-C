@@ -32,6 +32,11 @@ impl Slice<T> {
         return Slice<T> { data: arr, len: len };
     }
 
+    // Alias for backwards compatibility with std/mem.zc
+    fn new(data: T*, len: usize) -> Slice<T> {
+        return Slice<T> { data: data, len: len };
+    }
+
     fn iterator(self) -> SliceIter<T> {
         return SliceIter<T> {
             data: self.data,
