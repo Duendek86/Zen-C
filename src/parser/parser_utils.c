@@ -180,6 +180,7 @@ void add_symbol_with_token(ParserContext *ctx, const char *n, const char *t, Typ
     s->is_used = 0;
     s->decl_token = tok;
     s->is_const_value = 0;
+    s->is_moved = 0;
     s->next = ctx->current_scope->symbols;
     ctx->current_scope->symbols = s;
 
