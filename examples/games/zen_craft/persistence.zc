@@ -123,11 +123,14 @@ fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
                         let ly = h + 1 + th;
                         for lx in (cx-2)..(cx+3) {
                             for lz in (cz-2)..(cz+3) {
-                                for lyy in (ly-2)..(ly+2) {
-                                    if lyy < 32 && lyy >= 0 {
-                                        // Simple blob check d^2 < r^2
-                                        if data.blocks[lx][lyy][lz] == BLOCK_AIR {
-                                            data.blocks[lx][lyy][lz] = BLOCK_LEAVES;
+                                // Add Bounds Check!
+                                if lx >= 0 && lx < 16 && lz >= 0 && lz < 16 {
+                                    for lyy in (ly-2)..(ly+2) {
+                                        if lyy < 32 && lyy >= 0 {
+                                            // Simple blob check d^2 < r^2
+                                            if data.blocks[lx][lyy][lz] == BLOCK_AIR {
+                                                data.blocks[lx][lyy][lz] = BLOCK_LEAVES;
+                                            }
                                         }
                                     }
                                 }
@@ -342,7 +345,8 @@ fn request_save_async(c: Chunk*) {
     }
 }
 
-fn request_load_async(idx: int, cx: int, cz: int) {
+fn request_load_async(idx: int, cx: int, cz: int) -> int {
+    let result = 0;
     raw {
         // Find free slot
         int slot = -1;
@@ -359,8 +363,10 @@ fn request_load_async(idx: int, cx: int, cz: int) {
             io_queue[slot].cz = cz;
             io_queue[slot].target_idx = idx;
             io_queue[slot].status = 1; // PENDING
+            result = 1;
         }
     }
+    return result;
 }
 
 // Returns 1 if chunk was loaded/generated this frame

@@ -137,8 +137,10 @@ fn update_sunlight_column(chunks: Chunk*, num_chunks: int, x: int, z: int) {
         
         if casting_shadow == 0 {
              if blk != BLOCK_AIR {
-                 // Found surface, this block is lit, but below is shadow
-                 set_light_global(chunks, num_chunks, x, y, z, 15);
+                 // Found surface. This block is SOLILD. It stops sunlight.
+                 // It should NOT be lit itself (internally), otherwise it propagates light to neighbors underneath/inside.
+                 // With our new mesh generation, it will still LOOK bright on top because the AIR above it is 15.
+                 set_light_global(chunks, num_chunks, x, y, z, 0);
                  casting_shadow = 1;
              } else {
                  set_light_global(chunks, num_chunks, x, y, z, 15);
@@ -252,6 +254,29 @@ fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
              }
         }
     }
+}
+
+// Full recalculation: Clear light (via update_sunlight_column) then propagate
+fn recalculate_chunk_lighting(c: Chunk*, chunks: Chunk*, num_chunks: int) {
+    let gx_base = c.x * 16;
+    let gz_base = c.z * 16;
+    
+    // 1. Reset sunlight columns (Clears internal light to 15/0)
+    let lx = 0;
+    while lx < 16 {
+        let lz = 0;
+        while lz < 16 {
+            update_sunlight_column(chunks, num_chunks, gx_base + lx, gz_base + lz);
+            lz = lz + 1;
+        }
+        lx = lx + 1;
+    }
+    
+    // 2. Propagate new light (BFS)
+    // This will pull light from:
+    // a) The newly set sunlight columns (15s)
+    // b) The neighbors (if they have light) - effectively "healing" the chunk boundaries
+    propagate_light_in_chunk(c, chunks, num_chunks);
 }
 
 impl Chunk {

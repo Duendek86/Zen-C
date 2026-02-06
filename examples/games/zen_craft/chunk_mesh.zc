@@ -89,10 +89,6 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     float py = (float)y;
                     float pz = (float)z;
                     
-                    int light = c->light[x][y][z];
-                    unsigned char light_val = (unsigned char)(light * 16);
-                    if (light_val > 255) light_val = 255;
-                    
                     // Texture atlas UVs (4x2 grid: 0.25 wide, 0.5 high per texture)
                     // Layout:
                     // Row 0 (V=0.0-0.5): [Dirt][Grass_Top][Log_Side][Log_Top]
@@ -107,9 +103,26 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                         v_min = (float)(r) * 0.5f; \
                         u_max = u_min + 0.25f; \
                         v_max = v_min + 0.5f;
+                    
+                    // Lighting Curve Calculation
+                    // We want faster falloff. Linear * 16 is too bright.
+                    // Use quadratic curve: (light / 15.0)^2 * 255
+                    // Integer approximation: light * light
+                    // 15*15 = 225. 255 max. 
+                    // Let's use simple lookup or x*x approximation.
+                    // light=15 -> 225 (close to 255)
+                    // light=10 -> 100 (vs 160 linear)
+                    // light=5 -> 25 (vs 80 linear)
+                    // light=1 -> 1 (vs 16 linear) -> Pitch black practically.
+                    
+                    // Simple macro for curve
+                    #define CALC_LIGHT(l) ((unsigned char)((l) * (l)))
 
                     // +Y face (top)
                     if (get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_TALLGRASS) {
+                        int face_light = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz);
+                        unsigned char light_val = CALC_LIGHT(face_light);
+
                         if (btype == BLOCK_GRASS) { SET_UV(1, 0); }      // Grass Top
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
@@ -128,6 +141,9 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     
                     // -Y face (bottom)
                     if (get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_TALLGRASS) {
+                        int face_light = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz);
+                        unsigned char light_val = CALC_LIGHT(face_light);
+
                         if (btype == BLOCK_GRASS) { SET_UV(0, 0); }      // Dirt
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
@@ -146,6 +162,9 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     
                     // +X face (right)
                     if (get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_TALLGRASS) {
+                        int face_light = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz);
+                        unsigned char light_val = CALC_LIGHT(face_light);
+
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
@@ -164,6 +183,9 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     
                     // -X face (left)
                     if (get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_TALLGRASS) {
+                        int face_light = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz);
+                        unsigned char light_val = CALC_LIGHT(face_light);
+
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
@@ -182,6 +204,9 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     
                     // +Z face (front)
                     if (get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_TALLGRASS) {
+                        int face_light = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1);
+                        unsigned char light_val = CALC_LIGHT(face_light);
+
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
@@ -200,6 +225,9 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     
                     // -Z face (back)
                     if (get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_TALLGRASS) {
+                        int face_light = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1);
+                        unsigned char light_val = CALC_LIGHT(face_light);
+
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
@@ -216,6 +244,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                         ADD_VERTEX(px+1, py, pz,   0,0,-1, u_max, v_max, light_val);
                     }
                     
+                    #undef CALC_LIGHT
                     #undef SET_UV
                 }
             }

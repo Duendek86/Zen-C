@@ -9,24 +9,28 @@ out vec4 finalColor;
 uniform sampler2D texture0;
 uniform vec4 colDiffuse;
 
-// Hardcoded simple light - Sun-ish
-vec3 lightDir = normalize(vec3(0.8, 1.0, 0.5));
-vec3 lightColor = vec3(0.9, 0.9, 0.85); // Warm sunlight
-vec3 ambient = vec3(0.5, 0.5, 0.55);   // Cool ambient, darker for better contrast
+// Dynamic Lighting Uniforms
+uniform vec3 uLightDir;
+uniform vec3 uLightCol;
+uniform vec3 uAmbient;
+
+// Fallback if uniforms not set (optional, but good practice to initialize in app)
+// vec3 lightDir = normalize(vec3(0.8, 1.0, 0.5));
+// vec3 lightColor = vec3(0.9, 0.9, 0.85); 
+// vec3 ambient = vec3(0.5, 0.5, 0.55);   
 
 void main()
 {
     vec4 texelColor = texture(texture0, fragTexCoord);
     if (texelColor.a < 0.5) discard;
-    // DEBUG: Force visible
-    // if (texelColor.a < 0.5) discard;
-    // finalColor = vec4(1.0, 0.0, 0.0, 1.0); return; 
-
+    
+    // Normalize input dynamic direction
+    vec3 lightDir = normalize(uLightDir);
     
     float NdotL = max(dot(fragNormal, lightDir), 0.0);
-    vec3 diffuse = lightColor * NdotL;
+    vec3 diffuse = uLightCol * NdotL;
     
-    vec3 lighting = ambient + diffuse;
+    vec3 lighting = uAmbient + diffuse;
     
     // Fake AO / Edge darkening to distinguish blocks
     // Softer Fake AO (Vignette style) to add depth without hard borders

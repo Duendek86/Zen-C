@@ -15,6 +15,11 @@ let tex_sun: rl::Texture2D;
 let tex_moon: rl::Texture2D;
 let sh_lighting: rl::Shader;
 
+// Uniform Locations
+let loc_light_dir: int;
+let loc_light_col: int;
+let loc_ambient: int;
+
 fn load_texture_from_memory(_data: char*, _len: int) -> rl::Texture2D {
     let tex: rl::Texture2D;
     raw {
@@ -121,7 +126,30 @@ fn init_textures() {
     
     sh_lighting = load_shader_from_memory(vs_data.data, vs_data.len, fs_data.data, fs_data.len);
 
+    // Get Uniform Locations
+    raw {
+        loc_light_dir = GetShaderLocation(sh_lighting, "uLightDir");
+        loc_light_col = GetShaderLocation(sh_lighting, "uLightCol");
+        loc_ambient = GetShaderLocation(sh_lighting, "uAmbient");
+        
+        // Set default values (Mid-day)
+        Vector3 d = {0.8f, 1.0f, 0.5f};
+        Vector3 c = {0.9f, 0.9f, 0.85f};
+        Vector3 a = {0.5f, 0.5f, 0.55f};
+        SetShaderValue(sh_lighting, loc_light_dir, &d, SHADER_UNIFORM_VEC3);
+        SetShaderValue(sh_lighting, loc_light_col, &c, SHADER_UNIFORM_VEC3);
+        SetShaderValue(sh_lighting, loc_ambient, &a, SHADER_UNIFORM_VEC3);
+    }
+
     // No longer need individual models - chunks build their own meshes
+}
+
+fn update_lighting_uniforms(dir: rl::Vector3, col: rl::Vector3, amb: rl::Vector3) {
+    raw {
+        SetShaderValue(sh_lighting, loc_light_dir, &dir, SHADER_UNIFORM_VEC3);
+        SetShaderValue(sh_lighting, loc_light_col, &col, SHADER_UNIFORM_VEC3);
+        SetShaderValue(sh_lighting, loc_ambient, &amb, SHADER_UNIFORM_VEC3);
+    }
 }
 
 fn get_tex_atlas() -> rl::Texture2D {
@@ -136,14 +164,35 @@ fn get_shader_lighting() -> rl::Shader {
     return sh_lighting;
 }
 
-fn draw_sky(camera: rl::Camera3D) {
+fn draw_sky(camera: rl::Camera3D, day_time: float) {
     // Disable Depth Mask to draw sky behind everything
     rl::BeginMode3D(camera);
-        // Simple Fixed Sun Position or billboard
-        let sun_pos = rl::Vector3{x: camera.position.x + 20.0, y: camera.position.y + 40.0, z: camera.position.z + 20.0};
+        
+        // Calculate orbit
+        // 0.25 = Noon (Top), 0.5 = Sunset, 0.75 = Midnight, 0.0 = Sunrise
+        // Radius 50
+        
+        let sun_angle = (day_time * 2.0 * 3.14159) - 3.14159/2.0;
+
+        let sun_pos = rl::Vector3{
+            x: camera.position.x + (float)cos(sun_angle) * 50.0, 
+            y: camera.position.y + (float)sin(sun_angle) * 50.0, 
+            z: camera.position.z + 10.0
+        };
+        
+        // Moon is opposite
+        let moon_pos = rl::Vector3{
+            x: camera.position.x - (float)cos(sun_angle) * 50.0, 
+            y: camera.position.y - (float)sin(sun_angle) * 50.0, 
+            z: camera.position.z - 10.0
+        };
 
         raw {
-            DrawBillboard(camera, tex_sun, sun_pos, 10.0f, WHITE);
+            // Draw Sun
+            DrawBillboard(camera, tex_sun, sun_pos, 15.0f, WHITE);
+            
+            // Draw Moon
+            DrawBillboard(camera, tex_moon, moon_pos, 12.0f, WHITE);
         }
     rl::EndMode3D();
 }
