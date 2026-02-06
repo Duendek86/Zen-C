@@ -1,0 +1,41 @@
+#ifndef LIGHTING_ZC
+#define LIGHTING_ZC
+
+//> This file contains lighting-related structures and functions
+
+import "blocks.zc";
+
+struct LightNode {
+    x: int;
+    y: int;
+    z: int;
+}
+
+// Simple fixed-size queue for flood fill
+struct LightQueue {
+    nodes: LightNode[20000];
+    head: int;
+    tail: int;
+}
+
+fn queue_push(q: LightQueue*, x: int, y: int, z: int) {
+    if q.tail < 20000 {
+        q.nodes[q.tail].x = x;
+        q.nodes[q.tail].y = y;
+        q.nodes[q.tail].z = z;
+        q.tail += 1;
+    }
+}
+
+fn queue_pop(q: LightQueue*) -> LightNode {
+    let n: LightNode;
+    n = q.nodes[q.head];
+    q.head += 1;
+    return n;
+}
+
+fn queue_is_empty(q: LightQueue*) -> int {
+    return q.head >= q.tail;
+}
+
+#endif // LIGHTING_ZC

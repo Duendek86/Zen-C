@@ -1,0 +1,536 @@
+//> This file contains chunk-related structures and functions
+
+import "raylib.h" as rl;
+import "rlgl.h";
+import "math.h";
+import "blocks.zc";
+import "lighting.zc";
+import "rendering.zc";
+
+// Externs
+extern fn rand() -> int;
+extern fn abs(v: int) -> int;
+
+// World configuration
+def RENDER_DISTANCE = 3;
+def CHUNK_MAP_SIZE = 7; // RENDER_DISTANCE * 2 + 1
+def MAX_CHUNKS = 49;    // CHUNK_MAP_SIZE * CHUNK_MAP_SIZE
+
+struct Plant {
+    x: float;
+    y: float;
+    z: float;
+    type: int; // e.g. BLOCK_TALLGRASS
+}
+
+struct Chunk {
+    blocks: int[16][16][16]; // x, y, z
+    light: int[16][16][16];  // Light levels 0-15
+    
+    // Vegetation entities
+    plants: Plant[64];
+    plant_count: int;
+    
+    // Consolidated Mesh (Single draw call per chunk)
+    chunk_mesh: rl::Mesh;
+    chunk_model: rl::Model;
+    
+    // Plant Mesh (Separate draw call for non-block entities)
+    plant_mesh: rl::Mesh;
+    plant_model: rl::Model;
+    plant_mesh_built: int;
+    
+    mesh_dirty: int; // 1 = needs rebuild (both)
+    mesh_built: int; // 1 = block mesh has been created
+    
+    x: int;
+    z: int;
+}
+
+// Forward declarations
+extern fn GenImagePerlinNoise(width: int, height: int, offsetX: int, offsetY: int, scale: float) -> rl::Image;
+fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int;
+fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int);
+fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D);
+
+// Global helpers for multi-chunk operations (Optimized O(1) Lookup)
+fn get_chunk_index(cx: int, cz: int) -> int {
+    let mx = ((cx % CHUNK_MAP_SIZE) + CHUNK_MAP_SIZE) % CHUNK_MAP_SIZE;
+    let mz = ((cz % CHUNK_MAP_SIZE) + CHUNK_MAP_SIZE) % CHUNK_MAP_SIZE;
+    return mz * CHUNK_MAP_SIZE + mx;
+}
+
+fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
+    // Check height bounds
+    if y < 0 || y >= 16 { return BLOCK_AIR; }
+    
+    // Determine chunk coordinates
+    let cx = (int)floor((float)x / 16.0);
+    let cz = (int)floor((float)z / 16.0);
+    
+    // Local coordinates
+    let lx = ((x % 16) + 16) % 16;
+    let lz = ((z % 16) + 16) % 16;
+
+    let idx = get_chunk_index(cx, cz);
+    
+    if chunks[idx].x == cx && chunks[idx].z == cz {
+        return chunks[idx].blocks[lx][y][lz];
+    }
+
+    return BLOCK_AIR;
+}
+
+fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int) {
+    if y < 0 || y >= 16 { return; }
+
+    let cx = (int)floor((float)x / 16.0);
+    let cz = (int)floor((float)z / 16.0);
+    
+    let lx = ((x % 16) + 16) % 16;
+    let lz = ((z % 16) + 16) % 16;
+
+    let idx = get_chunk_index(cx, cz);
+
+    if chunks[idx].x == cx && chunks[idx].z == cz {
+        chunks[idx].blocks[lx][y][lz] = type;
+    }
+}
+
+fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
+    if y < 0 || y >= 16 { return 15; } // Sky is bright
+    
+    let cx = (int)floor((float)x / 16.0);
+    let cz = (int)floor((float)z / 16.0);
+
+    let idx = get_chunk_index(cx, cz);
+
+    if chunks[idx].x == cx && chunks[idx].z == cz {
+        let lx = ((x % 16) + 16) % 16;
+        let lz = ((z % 16) + 16) % 16;
+        return chunks[idx].light[lx][y][lz];
+    }
+    return 0; // Unloaded chunks have no light info
+}
+
+fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val: int) {
+    if y < 0 || y >= 16 { return; }
+
+    let cx = (int)floor((float)x / 16.0);
+    let cz = (int)floor((float)z / 16.0);
+
+    let idx = get_chunk_index(cx, cz);
+
+    if chunks[idx].x == cx && chunks[idx].z == cz {
+        let lx = ((x % 16) + 16) % 16;
+        let lz = ((z % 16) + 16) % 16;
+        chunks[idx].light[lx][y][lz] = val;
+    }
+}
+
+fn update_sunlight_column(chunks: Chunk*, num_chunks: int, x: int, z: int) {
+    let casting_shadow = 0;
+    
+    for i in 0..16 {
+        let y = 15 - i;
+        let blk = get_block(chunks, num_chunks, x, y, z);
+        
+        if casting_shadow == 0 {
+             if blk != BLOCK_AIR {
+                 // Found surface, this block is lit, but below is shadow
+                 set_light_global(chunks, num_chunks, x, y, z, 15);
+                 casting_shadow = 1;
+             } else {
+                 set_light_global(chunks, num_chunks, x, y, z, 15);
+             }
+        } else {
+             // Underground - start with minimal light
+             set_light_global(chunks, num_chunks, x, y, z, 0);
+        }
+    }
+}
+
+// Propagate light using BFS Queue
+fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
+    let gx_base = c.x * 16;
+    let gz_base = c.z * 16;
+    
+    let q: LightQueue;
+    q.head = 0;
+    q.tail = 0;
+    
+    // 1. Initialize Queue with sources and incoming light from neighbors
+    for x in 0..16 {
+        for y in 0..16 {
+            for z in 0..16 {
+                let current_light = c.light[x][y][z];
+                
+                // If this block emits light (sunlight column), it's a source
+                if current_light > 0 {
+                    queue_push(&q, gx_base + x, y, gz_base + z);
+                } 
+                else if c.blocks[x][y][z] == BLOCK_AIR {
+                    // Check neighbors for incoming light
+                    let gx = gx_base + x;
+                    let gz = gz_base + z;
+                    
+                    let max_n = 0;
+                    // Check all 6 neighbors
+                    let l_px = get_light_global(chunks, num_chunks, gx + 1, y, gz); if l_px > max_n { max_n = l_px; }
+                    let l_nx = get_light_global(chunks, num_chunks, gx - 1, y, gz); if l_nx > max_n { max_n = l_nx; }
+                    let l_py = get_light_global(chunks, num_chunks, gx, y + 1, gz); if l_py > max_n { max_n = l_py; }
+                    let l_ny = get_light_global(chunks, num_chunks, gx, y - 1, gz); if l_ny > max_n { max_n = l_ny; }
+                    let l_pz = get_light_global(chunks, num_chunks, gx, y, gz + 1); if l_pz > max_n { max_n = l_pz; }
+                    let l_nz = get_light_global(chunks, num_chunks, gx, y, gz - 1); if l_nz > max_n { max_n = l_nz; }
+                    
+                    if max_n > 1 {
+                        c.light[x][y][z] = max_n - 1;
+                        queue_push(&q, gx, y, gz);
+                    }
+                }
+            }
+        }
+    }
+    
+    // 2. Process Queue (BFS)
+    while !queue_is_empty(&q) {
+        let node = queue_pop(&q);
+        
+        let light = get_light_global(chunks, num_chunks, node.x, node.y, node.z);
+        if light <= 1 { continue; } // Cannot propagate further
+        
+        // Try to propagate to 6 neighbors
+        // Helper macro or inline
+        let nx = 0; let ny = 0; let nz = 0;
+        
+        // +X
+        nx = node.x + 1; ny = node.y; nz = node.z;
+        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
+             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+                 queue_push(&q, nx, ny, nz);
+             }
+        }
+        // -X
+        nx = node.x - 1; ny = node.y; nz = node.z;
+        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
+             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+                 queue_push(&q, nx, ny, nz);
+             }
+        }
+        // +Y
+        nx = node.x; ny = node.y + 1; nz = node.z;
+        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
+             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+                 queue_push(&q, nx, ny, nz);
+             }
+        }
+        // -Y
+        nx = node.x; ny = node.y - 1; nz = node.z;
+        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
+             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+                 queue_push(&q, nx, ny, nz);
+             }
+        }
+        // +Z
+        nx = node.x; ny = node.y; nz = node.z + 1;
+        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
+             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+                 queue_push(&q, nx, ny, nz);
+             }
+        }
+        // -Z
+        nx = node.x; ny = node.y; nz = node.z - 1;
+        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
+             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+                 queue_push(&q, nx, ny, nz);
+             }
+        }
+    }
+}
+
+impl Chunk {
+    // Helper: generate tree
+    fn generate_tree(self, x: int, y: int, z: int) {
+         // Simple oak tree
+         let height = 5;
+         
+         // Trunk
+         for i in 0..height {
+             if y + i < 16 {
+                 self.blocks[x][y + i][z] = BLOCK_LOG;
+             }
+         }
+         
+         // Leaves
+         // 2 layers?
+         // layer 1 (height - 2)
+         let lh = y + height - 2;
+         if lh < 16 {
+              for lx in -2..3 {
+                  for lz in -2..3 {
+                      if abs(lx) == 2 && abs(lz) == 2 { continue; } // rounded corners
+                      let tx = x + lx;
+                      let tz = z + lz;
+                      if tx >= 0 && tx < 16 && tz >= 0 && tz < 16 {
+                          if self.blocks[tx][lh][tz] == BLOCK_AIR {
+                               self.blocks[tx][lh][tz] = BLOCK_LEAVES;
+                          }
+                      }
+                  }
+              }
+         }
+         
+         // layer 2 (height - 1)
+         lh = y + height - 1;
+         if lh < 16 {
+              for lx in -1..2 {
+                  for lz in -1..2 {
+                      let rnd = 0;
+                      raw { rnd = rand() % 2; }
+                      if abs(lx) == 1 && abs(lz) == 1 && rnd == 0 { continue; } // rounded
+                      let tx = x + lx;
+                      let tz = z + lz;
+                      if tx >= 0 && tx < 16 && tz >= 0 && tz < 16 {
+                          if self.blocks[tx][lh][tz] == BLOCK_AIR {
+                               self.blocks[tx][lh][tz] = BLOCK_LEAVES;
+                          }
+                      }
+                  }
+              }
+         }
+         
+         // Top
+         lh = y + height;
+         if lh < 16 {
+             // Just top leaves
+              if self.blocks[x][lh][z] == BLOCK_AIR {
+                   self.blocks[x][lh][z] = BLOCK_LEAVES;
+              }
+              // Plus cross
+              if x+1<16 { self.blocks[x+1][lh][z] = BLOCK_LEAVES; }
+              if x-1>=0 { self.blocks[x-1][lh][z] = BLOCK_LEAVES; }
+              if z+1<16 { self.blocks[x][lh][z+1] = BLOCK_LEAVES; }
+              if z-1>=0 { self.blocks[x][lh][z-1] = BLOCK_LEAVES; }
+         }
+    }
+    
+    static fn new(x: int, z: int) -> Chunk {
+        let c: Chunk;
+        c.x = x;
+        c.z = z;
+
+        // Generate Heightmap
+        let heights: int[16][16];
+
+        raw {
+            Image noise = GenImagePerlinNoise(16, 16, x * 16, z * 16, 0.5f);
+
+            // Use LoadImageColors to safely get pixel data regardless of format
+            Color* pixels = LoadImageColors(noise);
+
+            for (int i = 0; i < 16; i++) {
+                for (int j = 0; j < 16; j++) {
+                    // pixels is row-major: y * width + x
+                    // we want x=i, z=j. z is y in image.
+                    Color col = pixels[j * 16 + i];
+                    int val = col.r; // Grayscale, so r=g=b
+
+                    // Map 0..255 to height 3..15
+                    int h = 3 + (val / 20);
+                    if (h > 15) h = 15;
+                    heights[i][j] = h;
+                }
+            }
+            UnloadImageColors(pixels);
+            UnloadImage(noise);
+        }
+
+        // Fill Blocks and Light
+        for cx in 0..16 {
+            for cz in 0..16 {
+                let h = heights[cx][cz];
+                for cy in 0..16 {
+                    // Default light
+                    let l = 0;
+                    
+                    if cy < h - 1 {
+                        c.blocks[cx][cy][cz] = BLOCK_STONE;
+                    } else if cy < h {
+                        c.blocks[cx][cy][cz] = BLOCK_DIRT;
+                    } else if cy == h {
+                        c.blocks[cx][cy][cz] = BLOCK_GRASS;
+                        l = 15; // Surface is lit
+                    } else {
+                        c.blocks[cx][cy][cz] = BLOCK_AIR;
+                        l = 15; // Sky is lit
+                    }
+                    
+                    c.light[cx][cy][cz] = l;
+                }
+            }
+        }
+        
+        // Add tall grass and Trees randomly
+        c.plant_count = 0;
+        
+        raw {
+            // Use chunk coordinates as seed for consistent randomness
+            srand(x * 73856093 ^ z * 19349663);
+            
+            for (int cx = 0; cx < 16; cx++) {
+                for (int cz = 0; cz < 16; cz++) {
+                    int h = heights[cx][cz];
+                    
+                    // Check if surface is grass
+                    if (c.blocks[cx][h][cz] == BLOCK_GRASS && h < 15) {
+                        int r = rand() % 100;
+                        
+                        // 10% chance for Tree
+                        if (r < 10) {
+                            // Generate Tree
+                            // Needs space?
+                            if (cx > 1 && cx < 14 && cz > 1 && cz < 14) {
+                                // Simple bounds check to avoid cross-chunk complexity for now
+                                // (Ideally would handle cross-chunk)
+                                // We need to cast 'c' to 'Chunk*' or call method differently?
+                                // self logic... 'c' is local.
+                                // We can't call method on local struct effectively if it expects pointer.
+                                // But generate_tree takes 'self' (by value copy? No, implicit ptr usually? Structs are value types in C)
+                                // In Zen-C methods on struct take 'self' which effectively acts on the instance.
+                                // But 'c' is being built.
+                                
+                                // Let's inline or use helper that takes pointer
+                                // Calling generated method: Chunk_generate_tree(&c, ...)
+                                
+                                // Actually, I can just call it if I change 'self' to 'Chunk*' or use (&c).generate_tree(...)
+                                // Let's try: (&c).generate_tree(...)
+                                
+                                // Wait, c is a local struct, not pointer.
+                                // I'll just manually inline the logic or use a static helper.
+                                // Actually, I defined `generate_tree(self...` above.
+                                // So I should be able to call `c.generate_tree(...)` if self is value, or `(&c).generate_tree` if self is ref.
+                                // Given `fn draw(self...)`, it seems self is value or implicit ref.
+                                // Let's assume `(&c).generate_tree(...)` works if I added it as a method.
+                                
+                                // IMPORTANT: I cannot add a method inside `impl Chunk` via replace_content easily if I don't see the top of `impl`.
+                                // I AM inside impl Chunk (replacing `new`).
+                                // Wait, `new` is `static fn`. `generate_tree` is instance `fn`.
+                                // I will add `generate_tree` BEFORE `new` inside `impl Chunk`.
+                                // My replacement content STARTS with `fn generate_tree`.
+                                // And I am replacing `static fn new` block.
+                                // So I am inserting `generate_tree` before `new` and replacing `new`.
+                                // This assumes I am replacing from line 256. 
+                                
+                                // Correct invocation:
+                                // (&c).generate_tree(cx, h + 1, cz);
+                                // However, generate_tree modifies `self`. If `self` is passed by value, `c` won't change.
+                                // Zen-C structs are pass-by-value unless `*`.
+                                // `fn generate_tree(self...` -> `self` is `Chunk`. modifying `self.blocks` modifies copy.
+                                // I must use `Chunk* self`? No, Zen-C syntax `fn method(self)` usually implies context.
+                                // If I want to modify, I probably need `fn generate_tree(self: Chunk* ...)`? 
+                                // Or `fn generate_tree(self ...)` and call it on `&c`.
+                                // Let's check `draw(self)` -> it calls `build_chunk_mesh(self...)`. 
+                                // But `build_chunk_mesh` takes `Chunk*`. 
+                                // `self` in `draw` IS `Chunk*`? 
+                                // `fn draw(self)` usually means `self` is `Chunk` (value) or `Chunk*` (ptr).
+                                // In `c.draw()`, `c` is `Chunk*` in main.zc loop.
+                                // Here `c` is `Chunk` (stack).
+                                // I will manually implement tree logic inline to avoid method issues.
+                                
+                                // Tree Logic Inline
+                                int tree_h = 5;
+                                for(int k=0; k<tree_h; k++) {
+                                    if(h+1+k < 16) c.blocks[cx][h+1+k][cz] = BLOCK_LOG;
+                                }
+                                // Leaves ... simplified
+                                int ly = h + 1 + tree_h - 2;
+                                for(int ly_off = 0; ly_off < 2; ly_off++) {
+                                    int chy = ly + ly_off;
+                                    if(chy < 16) {
+                                        for(int lx=-2; lx<=2; lx++) {
+                                            for(int lz=-2; lz<=2; lz++) {
+                                                if(abs(lx)==2 && abs(lz)==2) continue;
+                                                int tx = cx + lx;
+                                                int tz = cz + lz;
+                                                if(tx>=0 && tx<16 && tz>=0 && tz<16) {
+                                                    if(c.blocks[tx][chy][tz] == BLOCK_AIR) {
+                                                        c.blocks[tx][chy][tz] = BLOCK_LEAVES;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // Top
+                                int th = h + 1 + tree_h;
+                                if(th < 16) {
+                                     c.blocks[cx][th][cz] = BLOCK_LEAVES;
+                                     if(cx+1<16) c.blocks[cx+1][th][cz] = BLOCK_LEAVES;
+                                     if(cx-1>=0) c.blocks[cx-1][th][cz] = BLOCK_LEAVES;
+                                     if(cz+1<16) c.blocks[cx][th][cz+1] = BLOCK_LEAVES;
+                                     if(cz-1>=0) c.blocks[cx][th][cz-1] = BLOCK_LEAVES;
+                                }
+                            }
+                        }
+                        
+                        // 20% chance for Grass (re-check generated tree didn't overwrite)
+                        else if (r < 20) {
+                             if (c.blocks[cx][h+1][cz] == BLOCK_AIR && c.plant_count < 64) {
+                                c.plants[c.plant_count].x = (float)cx + 0.5f;
+                                c.plants[c.plant_count].y = (float)(h + 1);
+                                c.plants[c.plant_count].z = (float)cz + 0.5f;
+                                c.plants[c.plant_count].type = BLOCK_TALLGRASS; 
+                                c.plant_count++;
+                             }
+                        }
+                    }
+                }
+            }
+        }
+        
+        c.mesh_dirty = 1;
+        c.mesh_built = 0;
+        return c;
+    }
+
+    fn draw(self, chunks: Chunk*, num_chunks: int) {
+        // Rebuild mesh if dirty
+        if self.mesh_dirty != 0 {
+            build_chunk_mesh(self, chunks, num_chunks);
+            build_plant_mesh(self, get_tex_grass());
+        }
+        
+        // Draw entire chunk with single draw call!
+        let gx_base = self.x * 16;
+        let gz_base = self.z * 16;
+        
+        let offset = rl::Vector3{
+            x: (float)gx_base,
+            y: 0.0,
+            z: (float)gz_base
+        };
+        
+        // Skip if no mesh built (empty chunk)
+        if self.mesh_built != 0 {
+            rl::DrawModel(self.chunk_model, offset, 1.0, rl::WHITE);
+        }
+        
+        // Draw plants
+        if self.plant_mesh_built != 0 {
+            // Need a fresh offset copy as the previous one was moved
+            let offset_plants = rl::Vector3{
+                x: (float)gx_base,
+                y: 0.0,
+                z: (float)gz_base
+            };
+            
+            rl::DrawModel(self.plant_model, offset_plants, 1.0, rl::WHITE);
+        }
+    }
+}

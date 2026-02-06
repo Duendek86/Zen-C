@@ -1,0 +1,159 @@
+//> This file contains player-related structures and physics
+
+import "raylib.h" as rl;
+import "math.h";
+import "chunk.zc";
+import "blocks.zc";
+
+// Physics Constants
+def GRAVITY = 18.0;
+def JUMP_FORCE = 8.0;
+def MOVE_SPEED = 5.0;
+
+struct Player {
+    x: float;
+    y: float;
+    z: float;
+    vx: float;
+    vy: float;
+    vz: float;
+    yaw: float;
+    pitch: float;
+    camera: rl::Camera3D;
+}
+
+fn check_collision(chunks: Chunk*, num_chunks: int, x: float, y: float, z: float, w: float, h: float) -> int {
+    let min_x = (int)floor(x - w/2.0);
+    let max_x = (int)floor(x + w/2.0);
+    let min_y = (int)floor(y);
+    let max_y = (int)floor(y + h);
+    let min_z = (int)floor(z - w/2.0);
+    let max_z = (int)floor(z + w/2.0);
+
+    for ix in min_x..max_x+1 {
+        for iy in min_y..max_y+1 {
+            for iz in min_z..max_z+1 {
+                let block = get_block(chunks, num_chunks, ix, iy, iz);
+                // Tall grass is non-solid
+                if block != BLOCK_AIR && block != BLOCK_TALLGRASS {
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+impl Player {
+    static fn new(x: float, y: float, z: float) -> Player {
+        let p: Player;
+        p.x = x;
+        p.y = y;
+        p.z = z;
+        p.vx = 0.0;
+        p.vy = 0.0;
+        p.vz = 0.0;
+        p.yaw = 0.0;
+        p.pitch = 0.0;
+
+        p.camera = rl::Camera3D{
+            position: rl::Vector3{x: x, y: y, z: z},
+            target: rl::Vector3{x: x+1.0, y: y, z: z},
+            up: rl::Vector3{x: 0.0, y: 1.0, z: 0.0},
+            fovy: 70.0,
+            projection: rl::CAMERA_PERSPECTIVE
+        };
+        return p;
+    }
+
+    fn update(self, chunks: Chunk*, num_chunks: int, dt: float) {
+        // Mouse look
+        let mouse_delta = rl::GetMouseDelta();
+        self.yaw += mouse_delta.x * 0.003;
+        self.pitch += mouse_delta.y * 0.003;
+
+        if self.pitch > 1.5 { self.pitch = 1.5; }
+        if self.pitch < -1.5 { self.pitch = -1.5; }
+
+        // Movement input
+        let dx = 0.0;
+        let dz = 0.0;
+        if rl::IsKeyDown(rl::KEY_W) { dx += 1.0; }
+        if rl::IsKeyDown(rl::KEY_S) { dx -= 1.0; }
+        if rl::IsKeyDown(rl::KEY_A) { dz -= 1.0; }
+        if rl::IsKeyDown(rl::KEY_D) { dz += 1.0; }
+
+        let fx = cos(self.yaw);
+        let fz = sin(self.yaw);
+        let rx = -sin(self.yaw);
+        let rz = cos(self.yaw);
+
+        let move_x = fx * dx + rx * dz;
+        let move_z = fz * dx + rz * dz;
+
+        let mlen = sqrt(move_x*move_x + move_z*move_z);
+        if mlen > 0.001 {
+            move_x /= mlen;
+            move_z /= mlen;
+            self.vx = move_x * MOVE_SPEED;
+            self.vz = move_z * MOVE_SPEED;
+        } else {
+            self.vx = 0.0;
+            self.vz = 0.0;
+        }
+
+        // Gravity and jump
+        self.vy -= (float)GRAVITY * dt;
+
+        if rl::IsKeyPressed(rl::KEY_SPACE) {
+             // Only jump if on ground (check slightly below)
+             if check_collision(chunks, num_chunks, self.x, self.y - 0.1, self.z, 0.6, 1.8) {
+                 self.vy = JUMP_FORCE;
+             }
+        }
+
+        // Physics integration (Separate Axes)
+        let box_w = 0.6;
+        let box_h = 1.8;
+
+        // X axis
+        self.x += self.vx * dt;
+        if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
+            self.x -= self.vx * dt; // Revert
+            self.vx = 0.0;
+        }
+
+        // Z axis
+        self.z += self.vz * dt;
+        if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
+            self.z -= self.vz * dt; // Revert
+            self.vz = 0.0;
+        }
+
+        // Y axis
+        self.y += self.vy * dt;
+        if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
+            self.y -= self.vy * dt; // Revert
+            self.vy = 0.0;
+        }
+
+        // Check World Floor (Void Safety)
+        if self.y < -10.0 {
+            self.y = 20.0;
+            self.vy = 0.0;
+        }
+
+        // Sync Camera
+        let view_x = cos(self.yaw) * cos(self.pitch);
+        let view_z = sin(self.yaw) * cos(self.pitch);
+        let view_y = -sin(self.pitch);
+
+        self.camera.position.x = self.x;
+        self.camera.position.y = self.y + 1.6;
+        self.camera.position.z = self.z;
+
+        self.camera.target.x = self.camera.position.x + view_x;
+        self.camera.target.y = self.camera.position.y + view_y;
+        self.camera.target.z = self.camera.position.z + view_z;
+    }
+}

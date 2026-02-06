@@ -1,0 +1,68 @@
+//> This file contains raycasting functionality for block selection
+
+import "blocks.zc";
+import "chunk.zc";
+
+struct RaycastHit {
+    hit: int;
+    x: int;
+    y: int;
+    z: int;
+    face_x: int;
+    face_y: int;
+    face_z: int;
+}
+
+fn raycast(chunks: Chunk*, num_chunks: int, ox: float, oy: float, oz: float, dx: float, dy: float, dz: float, max_dist: float) -> RaycastHit {
+    let r: RaycastHit;
+    r.hit = 0;
+
+    let x = ox;
+    let y = oy;
+    let z = oz;
+
+    let step = 0.05;
+    let dist = 0.0;
+
+    let last_x = (int)floor(x);
+    let last_y = (int)floor(y);
+    let last_z = (int)floor(z);
+
+    while dist < max_dist {
+        x += dx * step;
+        y += dy * step;
+        z += dz * step;
+        dist += step;
+
+        let ix = (int)floor(x);
+        let iy = (int)floor(y);
+        let iz = (int)floor(z);
+
+        if get_block(chunks, num_chunks, ix, iy, iz) != BLOCK_AIR {
+            r.hit = 1;
+            r.x = ix;
+            r.y = iy;
+            r.z = iz;
+
+            // Determine face
+            r.face_x = 0;
+            r.face_y = 0;
+            r.face_z = 0;
+
+            if ix > last_x { r.face_x = -1; }
+            else if ix < last_x { r.face_x = 1; }
+            else if iy > last_y { r.face_y = -1; }
+            else if iy < last_y { r.face_y = 1; }
+            else if iz > last_z { r.face_z = -1; }
+            else if iz < last_z { r.face_z = 1; }
+
+            return r;
+        }
+
+        last_x = ix;
+        last_y = iy;
+        last_z = iz;
+    }
+
+    return r;
+}

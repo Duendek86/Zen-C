@@ -1,0 +1,386 @@
+//> This file contains the chunk mesh building implementation
+
+import "raylib.h" as rl;
+import "rlgl.h";
+import "blocks.zc";
+import "chunk.zc";
+import "rendering.zc";
+
+// No externs needed
+
+fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
+    // Note: We don't unload the old mesh - we just overwrite it
+    // This avoids crashes when the mesh is still being referenced
+    
+    let gx_base = c.x * 16;
+    let gz_base = c.z * 16;
+    
+    raw {
+        // Count visible faces first to allocate exact size
+        int face_count = 0;
+        
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    int btype = c->blocks[x][y][z];
+                    if (btype == BLOCK_AIR) continue;
+                    
+                    int b_gx = gx_base + x;
+                    int b_gz = gz_base + z;
+
+                    
+                    // Check each face for solid blocks
+                    if (get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_AIR) face_count++; // +X
+                    if (get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_AIR) face_count++; // -X
+                    if (get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_AIR) face_count++; // +Y
+                    if (get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_AIR) face_count++; // -Y
+                    if (get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_AIR) face_count++; // +Z
+                    if (get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_AIR) face_count++; // -Z
+                }
+            }
+        }
+        
+        
+        if (face_count == 0) {
+            // Empty chunk, create dummy mesh
+            c->chunk_mesh = GenMeshCube(0.0f, 0.0f, 0.0f);
+            c->chunk_model = LoadModelFromMesh(c->chunk_mesh);
+            c->mesh_built = 1;
+            c->mesh_dirty = 0;
+            return;
+        }
+        
+        // Allocate vertex data (6 vertices per face = 2 triangles)
+        int vertex_count = face_count * 6;
+        float* vertices = (float*)malloc(vertex_count * 3 * sizeof(float));
+        float* normals = (float*)malloc(vertex_count * 3 * sizeof(float));
+        float* texcoords = (float*)malloc(vertex_count * 2 * sizeof(float));
+        unsigned char* colors = (unsigned char*)malloc(vertex_count * 4 * sizeof(unsigned char));
+        
+        int v_idx = 0;
+        
+        // Helper macro to add vertex
+        #define ADD_VERTEX(px, py, pz, nx, ny, nz, u, v, light_val) \
+            vertices[v_idx * 3 + 0] = (float)(px); \
+            vertices[v_idx * 3 + 1] = (float)(py); \
+            vertices[v_idx * 3 + 2] = (float)(pz); \
+            normals[v_idx * 3 + 0] = (nx); \
+            normals[v_idx * 3 + 1] = (ny); \
+            normals[v_idx * 3 + 2] = (nz); \
+            texcoords[v_idx * 2 + 0] = (u); \
+            texcoords[v_idx * 2 + 1] = (v); \
+            colors[v_idx * 4 + 0] = (light_val); \
+            colors[v_idx * 4 + 1] = (light_val); \
+            colors[v_idx * 4 + 2] = (light_val); \
+            colors[v_idx * 4 + 3] = 255; \
+            v_idx++;
+        
+        // Build mesh
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    int btype = c->blocks[x][y][z];
+                    if (btype == BLOCK_AIR) continue;
+                    
+                    int b_gx = gx_base + x;
+                    int b_gz = gz_base + z;
+                    
+                    float px = (float)x;
+                    float py = (float)y;
+                    float pz = (float)z;
+                    
+                    int light = c->light[x][y][z];
+                    unsigned char light_val = (unsigned char)(light * 16);
+                    if (light_val > 255) light_val = 255;
+                    
+                    // Texture atlas UVs (4x2 grid: 0.25 wide, 0.5 high per texture)
+                    // Layout:
+                    // Row 0 (V=0.0-0.5): [Dirt][Grass_Top][Log_Side][Log_Top]
+                    // Row 1 (V=0.5-1.0): [Grass_Side][Stone][Leaves][Empty]
+                    
+                    float u_min, v_min, u_max, v_max;
+                    
+                    // Helpers for Atlas coords (col, row)
+                    // Col: 0..3, Row: 0..1
+                    #define SET_UV(c, r) \
+                        u_min = (float)(c) * 0.25f; \
+                        v_min = (float)(r) * 0.5f; \
+                        u_max = u_min + 0.25f; \
+                        v_max = v_min + 0.5f;
+
+                    // +Y face (top)
+                    if (get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_TALLGRASS) {
+                        if (btype == BLOCK_GRASS) { SET_UV(1, 0); }      // Grass Top
+                        else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
+                        else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
+                        else if (btype == BLOCK_LOG) { SET_UV(3, 0); }   // Log Top
+                        else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else { SET_UV(0, 0); }
+
+                        ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
+                        ADD_VERTEX(px+1, py+1, pz,   0,1,0, u_max, v_min, light_val);
+                        ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
+                        
+                        ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
+                        ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
+                        ADD_VERTEX(px, py+1, pz+1,   0,1,0, u_min, v_max, light_val);
+                    }
+                    
+                    // -Y face (bottom)
+                    if (get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_TALLGRASS) {
+                        if (btype == BLOCK_GRASS) { SET_UV(0, 0); }      // Dirt
+                        else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
+                        else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
+                        else if (btype == BLOCK_LOG) { SET_UV(3, 0); }   // Log Top
+                        else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else { SET_UV(0, 0); }
+
+                        ADD_VERTEX(px, py, pz,     0,-1,0, u_min, v_min, light_val);
+                        ADD_VERTEX(px+1, py, pz,   0,-1,0, u_max, v_min, light_val);
+                        ADD_VERTEX(px+1, py, pz+1, 0,-1,0, u_max, v_max, light_val);
+                        
+                        ADD_VERTEX(px, py, pz,     0,-1,0, u_min, v_min, light_val);
+                        ADD_VERTEX(px+1, py, pz+1, 0,-1,0, u_max, v_max, light_val);
+                        ADD_VERTEX(px, py, pz+1,   0,-1,0, u_min, v_max, light_val);
+                    }
+                    
+                    // +X face (right)
+                    if (get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_TALLGRASS) {
+                        if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
+                        else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
+                        else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
+                        else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
+                        else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else { SET_UV(0, 0); }
+
+                        ADD_VERTEX(px+1, py, pz,     1,0,0, u_min, v_max, light_val);
+                        ADD_VERTEX(px+1, py, pz+1,   1,0,0, u_max, v_max, light_val);
+                        ADD_VERTEX(px+1, py+1, pz+1, 1,0,0, u_max, v_min, light_val);
+                        
+                        ADD_VERTEX(px+1, py, pz,     1,0,0, u_min, v_max, light_val);
+                        ADD_VERTEX(px+1, py+1, pz+1, 1,0,0, u_max, v_min, light_val);
+                        ADD_VERTEX(px+1, py+1, pz,   1,0,0, u_min, v_min, light_val);
+                    }
+                    
+                    // -X face (left)
+                    if (get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_TALLGRASS) {
+                        if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
+                        else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
+                        else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
+                        else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
+                        else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else { SET_UV(0, 0); }
+
+                        ADD_VERTEX(px, py, pz,     -1,0,0, u_min, v_max, light_val);
+                        ADD_VERTEX(px, py+1, pz,   -1,0,0, u_min, v_min, light_val);
+                        ADD_VERTEX(px, py+1, pz+1, -1,0,0, u_max, v_min, light_val);
+                        
+                        ADD_VERTEX(px, py, pz,     -1,0,0, u_min, v_max, light_val);
+                        ADD_VERTEX(px, py+1, pz+1, -1,0,0, u_max, v_min, light_val);
+                        ADD_VERTEX(px, py, pz+1,   -1,0,0, u_max, v_max, light_val);
+                    }
+                    
+                    // +Z face (front)
+                    if (get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_TALLGRASS) {
+                        if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
+                        else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
+                        else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
+                        else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
+                        else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else { SET_UV(0, 0); }
+
+                        ADD_VERTEX(px, py, pz+1,     0,0,1, u_min, v_max, light_val);
+                        ADD_VERTEX(px+1, py, pz+1,   0,0,1, u_max, v_max, light_val);
+                        ADD_VERTEX(px+1, py+1, pz+1, 0,0,1, u_max, v_min, light_val);
+                        
+                        ADD_VERTEX(px, py, pz+1,     0,0,1, u_min, v_max, light_val);
+                        ADD_VERTEX(px+1, py+1, pz+1, 0,0,1, u_max, v_min, light_val);
+                        ADD_VERTEX(px, py+1, pz+1,   0,0,1, u_min, v_min, light_val);
+                    }
+                    
+                    // -Z face (back)
+                    if (get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_TALLGRASS) {
+                        if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
+                        else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
+                        else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
+                        else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
+                        else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else { SET_UV(0, 0); }
+
+                        ADD_VERTEX(px, py, pz,     0,0,-1, u_min, v_max, light_val);
+                        ADD_VERTEX(px, py+1, pz,   0,0,-1, u_min, v_min, light_val);
+                        ADD_VERTEX(px+1, py+1, pz, 0,0,-1, u_max, v_min, light_val);
+                        
+                        ADD_VERTEX(px, py, pz,     0,0,-1, u_min, v_max, light_val);
+                        ADD_VERTEX(px+1, py+1, pz, 0,0,-1, u_max, v_min, light_val);
+                        ADD_VERTEX(px+1, py, pz,   0,0,-1, u_max, v_max, light_val);
+                    }
+                    
+                    #undef SET_UV
+                }
+            }
+        }
+
+        #undef ADD_VERTEX
+        
+        // Create mesh
+        Mesh mesh = { 0 };
+        mesh.vertexCount = vertex_count;
+        mesh.triangleCount = vertex_count / 3;
+        mesh.vertices = vertices;
+        mesh.normals = normals;
+        mesh.texcoords = texcoords;
+        mesh.colors = colors;
+        
+        // Upload to GPU
+        UploadMesh(&mesh, false);
+        
+        c->chunk_mesh = mesh;
+        c->chunk_model = LoadModelFromMesh(mesh);
+        
+        // Assign shader and texture
+        c->chunk_model.materials[0].shader = get_shader_lighting();
+        c->chunk_model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = get_tex_atlas();
+        
+        c->mesh_built = 1;
+        c->mesh_dirty = 0;
+    }
+}
+
+fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
+    // Note: We overwrite old mesh
+    
+    raw {
+        if (c->plant_count == 0) {
+            c->plant_mesh_built = 1;
+            return;
+        }
+        
+        // 4 vertices per plant * 2 (Wait, X shape = 2 quads = 4 triangles = 12 vertices? Or 4 vertices with indices? 
+        // We use ADD_VERTEX which adds 3 vertices per triangle.
+        // X shape = 2 planes. each plane = 2 triangles = 6 vertices.
+        // Total 12 vertices per plant.
+        int vertex_count = c->plant_count * 12;
+        
+        // Ensure at least ... logic not needed if we abort on count=0 earlier, but let's be safe for malloc
+        if (vertex_count == 0) return; // Should be caught by early check
+
+        
+        // Allocate ...
+        // Reuse macro? Need to define it again or make it available.
+        // It was #defined inside build_chunk_mesh. We need to copy-paste or move it.
+        // Let's redefine it here to be safe and simple.
+        
+        float* vertices = (float*)malloc(vertex_count * 3 * sizeof(float));
+        float* normals = (float*)malloc(vertex_count * 3 * sizeof(float));
+        float* texcoords = (float*)malloc(vertex_count * 2 * sizeof(float));
+        unsigned char* colors = (unsigned char*)malloc(vertex_count * 4 * sizeof(unsigned char));
+        
+        int v_idx = 0;
+        
+        #define ADD_VERTEX_P(px, py, pz, nx, ny, nz, u, v, light_val) \
+            vertices[v_idx * 3 + 0] = (float)(px); \
+            vertices[v_idx * 3 + 1] = (float)(py); \
+            vertices[v_idx * 3 + 2] = (float)(pz); \
+            normals[v_idx * 3 + 0] = (nx); \
+            normals[v_idx * 3 + 1] = (ny); \
+            normals[v_idx * 3 + 2] = (nz); \
+            texcoords[v_idx * 2 + 0] = (u); \
+            texcoords[v_idx * 2 + 1] = (v); \
+            colors[v_idx * 4 + 0] = (light_val); \
+            colors[v_idx * 4 + 1] = (light_val); \
+            colors[v_idx * 4 + 2] = (light_val); \
+            colors[v_idx * 4 + 3] = 255; \
+            v_idx++;
+
+        for (int i = 0; i < c->plant_count; i++) {
+            // Half size: 0.5 width/height relative to block?
+            // Block is 1.0x1.0.
+            // "ocupe la mitad de un bloque" -> 0.5 height, 0.5 width.
+            // Center the plant.
+            // Block center is x.5, z.5.
+            // If plant is 0.5 wide, it goes from 0.25 to 0.75 relative to block corner.
+            // And height 0.5.
+            
+            float size = 0.6f;
+            float offset = (1.0f - size) / 2.0f;
+            
+            // Plants entities store relative coords inside chunk (e.g. 5.5, 6.0, 3.5)?
+            // In Chunk::new: x = cx + 0.5f.
+            // So x is centered.
+            // For block rendering, we used corner coords.
+            // Let's assume plant.x/y/z dictates the *bottom center* of the plant.
+            
+            float cx = c->plants[i].x;
+            float cy = c->plants[i].y;
+            float cz = c->plants[i].z;
+            
+            // Vertices from (cx - size/2) to (cx + size/2)
+            float x0 = cx - size/2.0f;
+            float x1 = cx + size/2.0f;
+            float y0 = cy;
+            float y1 = cy + size; // 0.5 unit high
+            float z0 = cz - size/2.0f;
+            float z1 = cz + size/2.0f;
+            
+            // Light
+            int lx = (int)cx;
+            int ly = (int)cy;
+            int lz = (int)cz;
+            int light = 15;
+            // Bounds check
+            if (lx>=0 && lx<16 && ly>=0 && ly<16 && lz>=0 && lz<16) light = c->light[lx][ly][lz];
+            
+            unsigned char light_val = (unsigned char)(light * 16);
+            if (light_val > 255) light_val = 255;
+            
+            // UVs: full sprite (0..1)
+            float u_min = 0.0f; float v_min = 0.0f; float u_max = 1.0f; float v_max = 1.0f;
+            
+            // Plane 1: (x0, z0) to (x1, z1)
+            ADD_VERTEX_P(x0, y0, z0,  0,0,1, u_min, v_max, light_val);
+            ADD_VERTEX_P(x1, y0, z1,  0,0,1, u_max, v_max, light_val);
+            ADD_VERTEX_P(x1, y1, z1,  0,0,1, u_max, v_min, light_val);
+            
+            ADD_VERTEX_P(x0, y0, z0,  0,0,1, u_min, v_max, light_val);
+            ADD_VERTEX_P(x1, y1, z1,  0,0,1, u_max, v_min, light_val);
+            ADD_VERTEX_P(x0, y1, z0,  0,0,1, u_min, v_min, light_val);
+            
+            // Plane 2: (x1, z0) to (x0, z1)
+            ADD_VERTEX_P(x1, y0, z0,  0,0,1, u_min, v_max, light_val);
+            ADD_VERTEX_P(x0, y0, z1,  0,0,1, u_max, v_max, light_val);
+            ADD_VERTEX_P(x0, y1, z1,  0,0,1, u_max, v_min, light_val);
+            
+            ADD_VERTEX_P(x1, y0, z0,  0,0,1, u_min, v_max, light_val);
+            ADD_VERTEX_P(x0, y1, z1,  0,0,1, u_max, v_min, light_val);
+            ADD_VERTEX_P(x1, y1, z0,  0,0,1, u_min, v_min, light_val);
+        }
+        
+        #undef ADD_VERTEX_P
+        
+
+        
+        Mesh mesh = { 0 };
+        // mesh.vertexCount = ... set below
+        // Raylib GenMesh... NO. We must fill Mesh struct directly like in build_chunk_mesh.
+        // But initializing `Mesh mesh = {0}` works.
+        
+        // Fill data
+        mesh.vertexCount = vertex_count;
+        mesh.triangleCount = vertex_count / 3;
+        mesh.vertices = vertices;
+        mesh.normals = normals;
+        mesh.texcoords = texcoords;
+        mesh.colors = colors;
+        
+        UploadMesh(&mesh, false);
+        
+        c->plant_mesh = mesh;
+        c->plant_model = LoadModelFromMesh(mesh);
+        
+        c->plant_model.materials[0].shader = get_shader_lighting();
+        c->plant_model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = get_tex_grass(); // Use grass texture again
+        
+        c->plant_mesh_built = 1;
+    }
+}

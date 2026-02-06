@@ -1,0 +1,10 @@
+//> This file contains block type definitions and constants
+
+// Block Types (Enum)
+def BLOCK_AIR = 0;
+def BLOCK_DIRT = 1;
+def BLOCK_GRASS = 2;
+def BLOCK_STONE = 3;
+def BLOCK_TALLGRASS = 4; // Decorative grass/plants
+def BLOCK_LOG = 5;
+def BLOCK_LEAVES = 6;

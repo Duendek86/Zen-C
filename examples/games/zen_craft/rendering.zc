@@ -1,0 +1,149 @@
+//> This file contains rendering-related functions and asset loading
+
+import "raylib.h" as rl;
+import "rlgl.h";
+
+// Screen configuration
+def SCREEN_WIDTH = 1920;
+def SCREEN_HEIGHT = 1080;
+def TITLE = "Zen Craft";
+
+// Global textures and shaders
+let tex_atlas: rl::Texture2D;
+let tex_grass: rl::Texture2D;
+let tex_sun: rl::Texture2D;
+let tex_moon: rl::Texture2D;
+let sh_lighting: rl::Shader;
+
+fn load_texture_from_memory(_data: char*, _len: int) -> rl::Texture2D {
+    let tex: rl::Texture2D;
+    raw {
+        Image img = LoadImageFromMemory(".png", (unsigned char*)_data, _len);
+        tex = LoadTextureFromImage(img);
+        SetTextureFilter(tex, TEXTURE_FILTER_POINT);
+        UnloadImage(img);
+    }
+    return tex;
+}
+
+fn load_shader_from_memory(_vs: char*, _vs_len: int, _fs: char*, _fs_len: int) -> rl::Shader {
+    let sh: rl::Shader;
+    raw {
+        char* vs = (char*)MemAlloc(_vs_len + 1);
+        memcpy(vs, _vs, _vs_len);
+        vs[_vs_len] = '\0';
+
+        char* fs = (char*)MemAlloc(_fs_len + 1);
+        memcpy(fs, _fs, _fs_len);
+        fs[_fs_len] = '\0';
+
+        sh = LoadShaderFromMemory(vs, fs);
+
+        MemFree(vs);
+        MemFree(fs);
+    }
+    return sh;
+}
+
+fn init_textures() {
+    // Load individual images
+    let dirt_data = embed "./assets/dirt.png";
+    let grass_side_data = embed "./assets/grass_side.png";
+    let grass_top_data = embed "./assets/grass.png";
+    let stone_data = embed "./assets/stone.png";
+    let log_data = embed "./assets/log.png";
+    let leaves_data = embed "./assets/leaves.png";
+    
+    let sun_data = embed "./assets/sun.png";
+    let moon_data = embed "./assets/moon.png";
+    let plant_data = embed "./assets/hierba_sprite.png";
+    
+    let vs_data = embed "./assets/lighting.vs";
+    let fs_data = embed "./assets/lighting.fs";
+
+    // Create Atlas Programmatically (4 cols x 2 rows)
+    // Col 0: Dirt, Grass_Side
+    // Col 1: Grass_Top, Stone
+    // Col 2: Log, Leaves
+    // Col 3: Log_Top(Log), (Empty)
+    
+    // Original images are likely square. Assume 16x16 or similar.
+    // We'll load them as Images, verify size, then draw onto atlas.
+    
+    raw {
+        Image img_dirt = LoadImageFromMemory(".png", (unsigned char*)dirt_data.data, dirt_data.len);
+        Image img_grass_s = LoadImageFromMemory(".png", (unsigned char*)grass_side_data.data, grass_side_data.len);
+        Image img_grass_t = LoadImageFromMemory(".png", (unsigned char*)grass_top_data.data, grass_top_data.len);
+        Image img_stone = LoadImageFromMemory(".png", (unsigned char*)stone_data.data, stone_data.len);
+        Image img_log = LoadImageFromMemory(".png", (unsigned char*)log_data.data, log_data.len);
+        Image img_leaves = LoadImageFromMemory(".png", (unsigned char*)leaves_data.data, leaves_data.len);
+        
+        int w = img_dirt.width;
+        int h = img_dirt.height;
+        
+        // Create Atlas: 4 * w, 2 * h
+        Image atlas = GenImageColor(w * 4, h * 2, BLANK);
+        
+        // Row 0 (Top half)
+        // (0,0) Dirt
+        ImageDraw(&atlas, img_dirt, (Rectangle){0,0,w,h}, (Rectangle){0,0,w,h}, WHITE);
+        // (1,0) Grass Top
+        ImageDraw(&atlas, img_grass_t, (Rectangle){0,0,w,h}, (Rectangle){w,0,w,h}, WHITE);
+        // (2,0) Log Side
+        ImageDraw(&atlas, img_log, (Rectangle){0,0,w,h}, (Rectangle){w*2,0,w,h}, WHITE);
+        // (3,0) Log Top (reuse log side for now)
+        ImageDraw(&atlas, img_log, (Rectangle){0,0,w,h}, (Rectangle){w*3,0,w,h}, WHITE);
+        
+        // Row 1 (Bottom half)
+        // (0,1) Grass Side
+        ImageDraw(&atlas, img_grass_s, (Rectangle){0,0,w,h}, (Rectangle){0,h,w,h}, WHITE);
+        // (1,1) Stone
+        ImageDraw(&atlas, img_stone, (Rectangle){0,0,w,h}, (Rectangle){w,h,w,h}, WHITE);
+        // (2,1) Leaves
+        ImageDraw(&atlas, img_leaves, (Rectangle){0,0,w,h}, (Rectangle){w*2,h,w,h}, WHITE);
+        
+        tex_atlas = LoadTextureFromImage(atlas);
+        SetTextureFilter(tex_atlas, TEXTURE_FILTER_POINT);
+        
+        // Cleanup
+        UnloadImage(img_dirt);
+        UnloadImage(img_grass_s);
+        UnloadImage(img_grass_t);
+        UnloadImage(img_stone);
+        UnloadImage(img_log);
+        UnloadImage(img_leaves);
+        UnloadImage(atlas);
+    }
+
+    tex_grass = load_texture_from_memory(plant_data.data, plant_data.len);
+    tex_sun = load_texture_from_memory(sun_data.data, sun_data.len);
+    tex_moon = load_texture_from_memory(moon_data.data, moon_data.len);
+    
+    sh_lighting = load_shader_from_memory(vs_data.data, vs_data.len, fs_data.data, fs_data.len);
+
+    // No longer need individual models - chunks build their own meshes
+}
+
+fn get_tex_atlas() -> rl::Texture2D {
+    return tex_atlas;
+}
+
+fn get_tex_grass() -> rl::Texture2D {
+    return tex_grass;
+}
+
+fn get_shader_lighting() -> rl::Shader {
+    return sh_lighting;
+}
+
+fn draw_sky(camera: rl::Camera3D) {
+    // Disable Depth Mask to draw sky behind everything
+    rl::BeginMode3D(camera);
+        // Simple Fixed Sun Position or billboard
+        let sun_pos = rl::Vector3{x: camera.position.x + 20.0, y: camera.position.y + 40.0, z: camera.position.z + 20.0};
+
+        raw {
+            DrawBillboard(camera, tex_sun, sun_pos, 10.0f, WHITE);
+        }
+    rl::EndMode3D();
+}
