@@ -233,7 +233,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         mesh.colors = colors;
         
         // Upload to GPU
+        // Silence "Mesh uploaded successfully" INFO log
+        SetTraceLogLevel(LOG_WARNING);
         UploadMesh(&mesh, false);
+        SetTraceLogLevel(LOG_INFO);
         
         c->chunk_mesh = mesh;
         c->chunk_model = LoadModelFromMesh(mesh);
@@ -373,7 +376,10 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
         mesh.texcoords = texcoords;
         mesh.colors = colors;
         
+        // Silence "Mesh uploaded successfully" INFO log
+        SetTraceLogLevel(LOG_WARNING);
         UploadMesh(&mesh, false);
+        SetTraceLogLevel(LOG_INFO);
         
         c->plant_mesh = mesh;
         c->plant_model = LoadModelFromMesh(mesh);

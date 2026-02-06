@@ -8,3 +8,4 @@ def BLOCK_STONE = 3;
 def BLOCK_TALLGRASS = 4; // Decorative grass/plants
 def BLOCK_LOG = 5;
 def BLOCK_LEAVES = 6;
+def BLOCK_GOLD_ORE = 7;

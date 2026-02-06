@@ -48,6 +48,8 @@ fn my_rand(seed: int*) -> int {
     return 0; // Unreachable
 }
 
+// This prototyp needs to be visible to db_worker, but implementation is elsewhere or dynamic?
+// For now, keep it here as the default generator
 fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
     // 1. Generate Heightmap
     let heights: int[16][16];
@@ -187,8 +189,28 @@ raw {
     RawIORequest io_queue[64];
     volatile int system_running = 0;
     
+    // Global world directory
+    char world_dir[64] = "world";
+
+    void set_world_dir(const char* path) {
+        if (!DirectoryExists(path)) {
+            MakeDirectory(path);
+        }
+        strcpy(world_dir, path);
+    }
+    
     // Prototype for generator
     void generate_chunk_data(ChunkData* data, int x, int z);
+    
+    // Forward declare title generator (implemented elsewhere or via callback?)
+    // For simplicity, we can just declare the prototype and implement it in title_generator.zc 
+    // but the linker needs to see it.
+    // Or we switch generator based on world_dir inside `generate_chunk_data`.
+    // Actually, let's inject a generator function pointer? 
+    // Zen-C doesn't support function pointers easily in high level.
+    // Let's modify `generate_chunk_data` to check `world_dir`.
+    
+    void generate_title_chunk(ChunkData* data, int x, int z);
 
 
     // Worker Function
@@ -205,7 +227,7 @@ raw {
                     // Processor
                     RawIORequest *req = &io_queue[i];
                     char filename[256];
-                    sprintf(filename, "world/chunk_%d_%d.dat", req->cx, req->cz);
+                    sprintf(filename, "%s/chunk_%d_%d.dat", world_dir, req->cx, req->cz);
 
                     if(req->type == 1) { // SAVE
                         // Write to disk
@@ -225,12 +247,20 @@ raw {
                                 req->status = 2; // COMPLETED
                             } else {
                                 // FAILED TO LOAD -> GENERATE
-                                generate_chunk_data(&req->data, req->cx, req->cz);
+                                if(strcmp(world_dir, "titleworld") == 0) {
+                                    generate_title_chunk(&req->data, req->cx, req->cz);
+                                } else {
+                                    generate_chunk_data(&req->data, req->cx, req->cz);
+                                }
                                 req->status = 2; // COMPLETED (Generated)
                             }
                         } else {
                              // FAILED TO LOAD -> GENERATE
-                             generate_chunk_data(&req->data, req->cx, req->cz);
+                             if(strcmp(world_dir, "titleworld") == 0) {
+                                generate_title_chunk(&req->data, req->cx, req->cz);
+                             } else {
+                                generate_chunk_data(&req->data, req->cx, req->cz);
+                             }
                              req->status = 2; // COMPLETED (Generated)
                         }
                     }
@@ -248,6 +278,12 @@ raw {
             }
         }
         return 0;
+    }
+}
+
+fn set_game_world_dir(path: char*) {
+    raw {
+        set_world_dir(path);
     }
 }
 
@@ -375,7 +411,7 @@ struct PlayerSaveData {
 
 fn save_player_data(x: float, y: float, z: float, block: int) {
     raw {
-        if (!DirectoryExists("world")) MakeDirectory("world");
+        if (!DirectoryExists(world_dir)) MakeDirectory(world_dir);
         
         PlayerSaveData pd;
         pd.x = x;
@@ -385,7 +421,10 @@ fn save_player_data(x: float, y: float, z: float, block: int) {
         
         TraceLog(LOG_INFO, "Saving Player: %.2f, %.2f, %.2f, Block: %d", x, y, z, block);
         
-        FILE *f = fopen("world/player.dat", "wb");
+        char filename[256];
+        sprintf(filename, "%s/player.dat", world_dir);
+        
+        FILE *f = fopen(filename, "wb");
         if(f) {
             fwrite(&pd, sizeof(PlayerSaveData), 1, f);
             fclose(f);
@@ -399,7 +438,10 @@ fn save_player_data(x: float, y: float, z: float, block: int) {
 fn load_player_data(x: float*, y: float*, z: float*, block: int*) -> int {
     let success = 0;
     raw {
-        FILE *f = fopen("world/player.dat", "rb");
+        char filename[256];
+        sprintf(filename, "%s/player.dat", world_dir);
+        
+        FILE *f = fopen(filename, "rb");
         if(f) {
             PlayerSaveData pd;
             size_t read = fread(&pd, sizeof(PlayerSaveData), 1, f);
