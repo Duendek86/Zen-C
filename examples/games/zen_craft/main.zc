@@ -12,6 +12,7 @@ import "chunk_mesh.zc";
 import "raycast.zc";
 import "rendering.zc";
 import "player.zc";
+import "persistence.zc";
 
 fn main() {
     rl::InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, TITLE);
@@ -22,10 +23,20 @@ fn main() {
 
     // Load Assets
     init_textures();
+    init_persistence();
 
     // Initialize Player
-    let p = Player::new(10.0, 10.0, 10.0);
+    let start_x: float = 10.0;
+    let start_y: float = 10.0;
+    let start_z: float = 10.0;
     let selected_block = BLOCK_STONE;
+    
+    // Attempt to load saved state
+    if (load_player_data(&start_x, &start_y, &start_z, &selected_block) != 0) {
+        start_y += 0.5; // Add safety offset to prevent spawning inside ground
+    }
+    
+    let p = Player::new(start_x, start_y, start_z);
 
     // Generate Chunks
     // Buffer size: MAX_CHUNKS
@@ -63,19 +74,48 @@ fn main() {
                  let idx = get_chunk_index(cx, cz);
                  
                  if chunks[idx].x != cx || chunks[idx].z != cz {
-                     chunks[idx] = Chunk::new(cx, cz);
-                     // Propagate light for gradual lighting
-                     propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
+                     // If we are already pending loading this coordinate, skip
+                     // We can check if chunks[idx].blocks[0][0][0] == -1 as a flag or similar?
+                     // Or check if x == -9999 but we just requested?
+                     // Actually, chunks[idx].x is currently OLD chunk x.
                      
-                     // We need to build the mesh. 
-                     // Also, neighbors might need rebuilding if we appeared next to them.
-                     // For simplicity, just build self now. Neighbors will update eventually or we force them.
-                     chunks[idx].mesh_dirty = 1;
+                     // 1. Save old
+                     if chunks[idx].x != -9999 {
+                         request_save_async(&chunks[idx]);
+                         chunks[idx].x = -9999; // Mark invalid so we don't save again
+                     }
+                     
+                     // 2. Request Load of NEW
+                     // We set x to target cx? No, if we do that, we might think it's loaded.
+                     // But we need to know we requested it.
+                     // Let's set chunks[idx].x = -8888 (Loading State) or use a separate tracker?
+                     // If we don't track, we will spam requests every frame.
+                     // Simple hack: set x = cx, z = cz, but mark mesh_built = 0?
+                     // No, if we set x=cx, then (chunks[idx].x != cx) is false, and we stop requesting. Correct.
+                     // BUT, the data isn't there yet.
+                     // So we set x=cx, z=cz. The drawing loop checks mesh_built.
+                     // But we must make sure we don't draw garbage.
+                     // We should clear the block data or set a flag `mesh_built = 0`.
+                     // `poll_async_results` will eventually fill the data and set mesh_dirty.
+                     
+                     chunks[idx].x = cx;
+                     chunks[idx].z = cz;
+                     chunks[idx].mesh_built = 0; // Don't draw yet
+                     chunks[idx].light[0][0][0] = -1; // Flag as not ready? 
+                     
+                     // Clear blocks to AIR to avoid ghosting if we draw
+                     // memset?
+                     raw { memset(chunks[idx].blocks, 0, sizeof(chunks[idx].blocks)); }
+                     
+                     request_load_async(idx, cx, cz);
                  }
              }
         }
         
         (&p).update(&chunks[0], MAX_CHUNKS, dt);
+        
+        // Poll for async loads finishing
+        poll_async_results(&chunks[0], MAX_CHUNKS);
 
         // Block selection input
         if rl::IsKeyPressed(rl::KEY_ONE) { selected_block = BLOCK_DIRT; }
@@ -99,12 +139,15 @@ fn main() {
 
         // Render visible chunks
         // We can just iterate the buffer, or iterate the view radius for Frustum Culling later
+        let builds_in_frame = 0;
+        let max_builds = 1; 
+
         for i in 0..MAX_CHUNKS {
             let c: Chunk* = &chunks[i];
             // Simple frustum/distance check could go here
              // Only draw if valid
             if c.x != -9999 {
-                c.draw(&chunks[0], MAX_CHUNKS);
+                c.draw(&chunks[0], MAX_CHUNKS, &builds_in_frame, max_builds);
             }
         }
 
@@ -237,6 +280,9 @@ fn main() {
         rl::DrawText("WASD+Mouse: Move | Click: Break/Place", 10, 30, 20, rl::DARKGRAY);
         rl::DrawText(rl::TextFormat("Selected Block: %d", selected_block), 10, 50, 20, rl::BLACK);
         
+        // --- Added: Player Coordinates ---
+        rl::DrawText(rl::TextFormat("Pos: %.1f, %.1f, %.1f", p.x, p.y, p.z), 10, 75, 20, rl::BLACK);
+        
         if selected_block == BLOCK_DIRT { rl::DrawText("DIRT", 180, 50, 20, rl::BROWN); }
         else if selected_block == BLOCK_GRASS { rl::DrawText("GRASS", 180, 50, 20, rl::GREEN); }
         else if selected_block == BLOCK_STONE { rl::DrawText("STONE", 180, 50, 20, rl::GRAY); }
@@ -246,5 +292,29 @@ fn main() {
         rl::DrawFPS(10, 100);
 
         rl::EndDrawing();
+    }
+    
+    // Save all loaded chunks on exit
+    // Trigger async saves (OS will likely flush buffers on exit or we should wait?)
+    // For simplicity, we just trigger them. Ideally we wait for queue empty.
+    for i in 0..MAX_CHUNKS {
+        if chunks[i].x != -9999 {
+            request_save_async(&chunks[i]);
+        }
+    }
+    
+    // Save Player Data
+    save_player_data(p.x, p.y, p.z, selected_block);
+    
+    // Small sleep to allow thread to process some? 
+    // Or we just expect the OS/Thread to finish. 
+    // C process exit kills threads. 
+    // We should really wait.
+    raw {
+        #if defined(_WIN32)
+        Sleep(100);
+        #else
+        usleep(100000);
+        #endif
     }
 }

@@ -24,8 +24,8 @@ struct Plant {
 }
 
 struct Chunk {
-    blocks: int[16][16][16]; // x, y, z
-    light: int[16][16][16];  // Light levels 0-15
+    blocks: int[16][32][16]; // x, y, z
+    light: int[16][32][16];  // Light levels 0-15
     
     // Vegetation entities
     plants: Plant[64];
@@ -62,7 +62,7 @@ fn get_chunk_index(cx: int, cz: int) -> int {
 
 fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
     // Check height bounds
-    if y < 0 || y >= 16 { return BLOCK_AIR; }
+    if y < 0 || y >= 32 { return BLOCK_AIR; }
     
     // Determine chunk coordinates
     let cx = (int)floor((float)x / 16.0);
@@ -82,7 +82,7 @@ fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
 }
 
 fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int) {
-    if y < 0 || y >= 16 { return; }
+    if y < 0 || y >= 32 { return; }
 
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
@@ -98,7 +98,7 @@ fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int)
 }
 
 fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
-    if y < 0 || y >= 16 { return 15; } // Sky is bright
+    if y < 0 || y >= 32 { return 15; } // Sky is bright
     
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
@@ -114,7 +114,7 @@ fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> 
 }
 
 fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val: int) {
-    if y < 0 || y >= 16 { return; }
+    if y < 0 || y >= 32 { return; }
 
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
@@ -131,8 +131,8 @@ fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val
 fn update_sunlight_column(chunks: Chunk*, num_chunks: int, x: int, z: int) {
     let casting_shadow = 0;
     
-    for i in 0..16 {
-        let y = 15 - i;
+    for i in 0..32 {
+        let y = 31 - i;
         let blk = get_block(chunks, num_chunks, x, y, z);
         
         if casting_shadow == 0 {
@@ -161,7 +161,7 @@ fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
     
     // 1. Initialize Queue with sources and incoming light from neighbors
     for x in 0..16 {
-        for y in 0..16 {
+        for y in 0..32 {
             for z in 0..16 {
                 let current_light = c.light[x][y][z];
                 
@@ -262,7 +262,7 @@ impl Chunk {
          
          // Trunk
          for i in 0..height {
-             if y + i < 16 {
+             if y + i < 32 {
                  self.blocks[x][y + i][z] = BLOCK_LOG;
              }
          }
@@ -341,9 +341,9 @@ impl Chunk {
                     Color col = pixels[j * 16 + i];
                     int val = col.r; // Grayscale, so r=g=b
 
-                    // Map 0..255 to height 3..15
-                    int h = 3 + (val / 20);
-                    if (h > 15) h = 15;
+                    // Map 0..255 to height 3..25 (More verticality)
+                    int h = 3 + (val / 12);
+                    if (h > 30) h = 30;
                     heights[i][j] = h;
                 }
             }
@@ -355,7 +355,7 @@ impl Chunk {
         for cx in 0..16 {
             for cz in 0..16 {
                 let h = heights[cx][cz];
-                for cy in 0..16 {
+                for cy in 0..32 {
                     // Default light
                     let l = 0;
                     
@@ -388,7 +388,7 @@ impl Chunk {
                     int h = heights[cx][cz];
                     
                     // Check if surface is grass
-                    if (c.blocks[cx][h][cz] == BLOCK_GRASS && h < 15) {
+                    if (c.blocks[cx][h][cz] == BLOCK_GRASS && h < 31) {
                         int r = rand() % 100;
                         
                         // 10% chance for Tree
@@ -446,13 +446,13 @@ impl Chunk {
                                 // Tree Logic Inline
                                 int tree_h = 5;
                                 for(int k=0; k<tree_h; k++) {
-                                    if(h+1+k < 16) c.blocks[cx][h+1+k][cz] = BLOCK_LOG;
+                                    if(h+1+k < 32) c.blocks[cx][h+1+k][cz] = BLOCK_LOG;
                                 }
                                 // Leaves ... simplified
                                 int ly = h + 1 + tree_h - 2;
                                 for(int ly_off = 0; ly_off < 2; ly_off++) {
                                     int chy = ly + ly_off;
-                                    if(chy < 16) {
+                                    if(chy < 32) {
                                         for(int lx=-2; lx<=2; lx++) {
                                             for(int lz=-2; lz<=2; lz++) {
                                                 if(abs(lx)==2 && abs(lz)==2) continue;
@@ -469,7 +469,7 @@ impl Chunk {
                                 }
                                 // Top
                                 int th = h + 1 + tree_h;
-                                if(th < 16) {
+                                if(th < 32) {
                                      c.blocks[cx][th][cz] = BLOCK_LEAVES;
                                      if(cx+1<16) c.blocks[cx+1][th][cz] = BLOCK_LEAVES;
                                      if(cx-1>=0) c.blocks[cx-1][th][cz] = BLOCK_LEAVES;
@@ -499,31 +499,41 @@ impl Chunk {
         return c;
     }
 
-    fn draw(self, chunks: Chunk*, num_chunks: int) {
+    fn draw(self, chunks: Chunk*, num_chunks: int, builds_this_frame: int*, max_builds: int) {
         // Rebuild mesh if dirty
         if self.mesh_dirty != 0 {
-            build_chunk_mesh(self, chunks, num_chunks);
-            build_plant_mesh(self, get_tex_grass());
+            // Rate limit mesh building
+            if *builds_this_frame < max_builds {
+                build_chunk_mesh(self, chunks, num_chunks);
+                build_plant_mesh(self, get_tex_grass());
+                
+                raw {
+                   (*builds_this_frame)++;
+                }
+            }
         }
         
         // Draw entire chunk with single draw call!
         let gx_base = self.x * 16;
         let gz_base = self.z * 16;
         
-        let offset = rl::Vector3{
-            x: (float)gx_base,
-            y: 0.0,
-            z: (float)gz_base
-        };
+        // Skip if no mesh built (empty chunk or waiting for build)
+        // If mesh is dirty but we skipped build, mesh_built is 0, so we don't draw (invisible for 1 frame)
+        // Or we draw OLD mesh?
+        // build_chunk_mesh clears and rebuilds. If we skip, we just don't have new model.
+        // If it's a new chunk (mesh_built=0), it stays invisible. That's fine (pop-in prevention).
         
-        // Skip if no mesh built (empty chunk)
         if self.mesh_built != 0 {
+            let offset = rl::Vector3{
+                x: (float)gx_base,
+                y: 0.0,
+                z: (float)gz_base
+            };
             rl::DrawModel(self.chunk_model, offset, 1.0, rl::WHITE);
         }
         
         // Draw plants
         if self.plant_mesh_built != 0 {
-            // Need a fresh offset copy as the previous one was moved
             let offset_plants = rl::Vector3{
                 x: (float)gx_base,
                 y: 0.0,

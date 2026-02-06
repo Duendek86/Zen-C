@@ -75,72 +75,87 @@ impl Player {
         if self.pitch > 1.5 { self.pitch = 1.5; }
         if self.pitch < -1.5 { self.pitch = -1.5; }
 
-        // Movement input
-        let dx = 0.0;
-        let dz = 0.0;
-        if rl::IsKeyDown(rl::KEY_W) { dx += 1.0; }
-        if rl::IsKeyDown(rl::KEY_S) { dx -= 1.0; }
-        if rl::IsKeyDown(rl::KEY_A) { dz -= 1.0; }
-        if rl::IsKeyDown(rl::KEY_D) { dz += 1.0; }
+        // Check if current chunk is loaded
+        let cx = (int)floor(self.x / 16.0);
+        let cz = (int)floor(self.z / 16.0);
+        let idx = get_chunk_index(cx, cz);
+        
+        // If chunk is not loaded, don't apply physics (gravity/movement)
+        // This prevents falling through the world while waiting for async load
+        // Check light sentinel (-1 means requested but not loaded)
+        if chunks[idx].x == cx && chunks[idx].z == cz && chunks[idx].light[0][0][0] != -1 {
+            // Movement input
+            let dx = 0.0;
+            let dz = 0.0;
+            if rl::IsKeyDown(rl::KEY_W) { dx += 1.0; }
+            if rl::IsKeyDown(rl::KEY_S) { dx -= 1.0; }
+            if rl::IsKeyDown(rl::KEY_A) { dz -= 1.0; }
+            if rl::IsKeyDown(rl::KEY_D) { dz += 1.0; }
 
-        let fx = cos(self.yaw);
-        let fz = sin(self.yaw);
-        let rx = -sin(self.yaw);
-        let rz = cos(self.yaw);
+            let fx = cos(self.yaw);
+            let fz = sin(self.yaw);
+            let rx = -sin(self.yaw);
+            let rz = cos(self.yaw);
 
-        let move_x = fx * dx + rx * dz;
-        let move_z = fz * dx + rz * dz;
+            let move_x = fx * dx + rx * dz;
+            let move_z = fz * dx + rz * dz;
 
-        let mlen = sqrt(move_x*move_x + move_z*move_z);
-        if mlen > 0.001 {
-            move_x /= mlen;
-            move_z /= mlen;
-            self.vx = move_x * MOVE_SPEED;
-            self.vz = move_z * MOVE_SPEED;
+            let mlen = sqrt(move_x*move_x + move_z*move_z);
+            if mlen > 0.001 {
+                move_x /= mlen;
+                move_z /= mlen;
+                self.vx = move_x * MOVE_SPEED;
+                self.vz = move_z * MOVE_SPEED;
+            } else {
+                self.vx = 0.0;
+                self.vz = 0.0;
+            }
+
+            // Gravity and jump
+            self.vy -= (float)GRAVITY * dt;
+
+            if rl::IsKeyPressed(rl::KEY_SPACE) {
+                 // Only jump if on ground (check slightly below)
+                 if check_collision(chunks, num_chunks, self.x, self.y - 0.1, self.z, 0.6, 1.8) {
+                     self.vy = JUMP_FORCE;
+                 }
+            }
+
+            // Physics integration (Separate Axes)
+            let box_w = 0.6;
+            let box_h = 1.8;
+
+            // X axis
+            self.x += self.vx * dt;
+            if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
+                self.x -= self.vx * dt; // Revert
+                self.vx = 0.0;
+            }
+
+            // Z axis
+            self.z += self.vz * dt;
+            if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
+                self.z -= self.vz * dt; // Revert
+                self.vz = 0.0;
+            }
+
+            // Y axis
+            self.y += self.vy * dt;
+            if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
+                self.y -= self.vy * dt; // Revert
+                self.vy = 0.0;
+            }
+
+            // Check World Floor (Void Safety)
+            if self.y < -10.0 {
+                self.y = 20.0;
+                self.vy = 0.0;
+            }
         } else {
+            // Optional: Apply minimal damping or zero velocity to stop sliding if we entered void?
             self.vx = 0.0;
-            self.vz = 0.0;
-        }
-
-        // Gravity and jump
-        self.vy -= (float)GRAVITY * dt;
-
-        if rl::IsKeyPressed(rl::KEY_SPACE) {
-             // Only jump if on ground (check slightly below)
-             if check_collision(chunks, num_chunks, self.x, self.y - 0.1, self.z, 0.6, 1.8) {
-                 self.vy = JUMP_FORCE;
-             }
-        }
-
-        // Physics integration (Separate Axes)
-        let box_w = 0.6;
-        let box_h = 1.8;
-
-        // X axis
-        self.x += self.vx * dt;
-        if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
-            self.x -= self.vx * dt; // Revert
-            self.vx = 0.0;
-        }
-
-        // Z axis
-        self.z += self.vz * dt;
-        if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
-            self.z -= self.vz * dt; // Revert
-            self.vz = 0.0;
-        }
-
-        // Y axis
-        self.y += self.vy * dt;
-        if check_collision(chunks, num_chunks, self.x, self.y, self.z, box_w, box_h) {
-            self.y -= self.vy * dt; // Revert
             self.vy = 0.0;
-        }
-
-        // Check World Floor (Void Safety)
-        if self.y < -10.0 {
-            self.y = 20.0;
-            self.vy = 0.0;
+            self.vz = 0.0;
         }
 
         // Sync Camera

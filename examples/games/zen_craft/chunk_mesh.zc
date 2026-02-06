@@ -20,7 +20,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         int face_count = 0;
         
         for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 16; y++) {
+            for (int y = 0; y < 32; y++) {
                 for (int z = 0; z < 16; z++) {
                     int btype = c->blocks[x][y][z];
                     if (btype == BLOCK_AIR) continue;
@@ -77,7 +77,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         
         // Build mesh
         for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 16; y++) {
+            for (int y = 0; y < 32; y++) {
                 for (int z = 0; z < 16; z++) {
                     int btype = c->blocks[x][y][z];
                     if (btype == BLOCK_AIR) continue;
@@ -302,7 +302,7 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
             // If plant is 0.5 wide, it goes from 0.25 to 0.75 relative to block corner.
             // And height 0.5.
             
-            float size = 0.6f;
+            float size = 0.8f;
             float offset = (1.0f - size) / 2.0f;
             
             // Plants entities store relative coords inside chunk (e.g. 5.5, 6.0, 3.5)?
@@ -329,7 +329,7 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
             int lz = (int)cz;
             int light = 15;
             // Bounds check
-            if (lx>=0 && lx<16 && ly>=0 && ly<16 && lz>=0 && lz<16) light = c->light[lx][ly][lz];
+            if (lx>=0 && lx<16 && ly>=0 && ly<32 && lz>=0 && lz<16) light = c->light[lx][ly][lz];
             
             unsigned char light_val = (unsigned char)(light * 16);
             if (light_val > 255) light_val = 255;

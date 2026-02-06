@@ -1,0 +1,422 @@
+//> Persistence implementation
+import "raylib.h" as rl;
+import "chunk.zc";
+
+// Global constants for Async System
+def MAX_PENDING_IO = 64;
+
+// Request Types
+def REQ_NONE = 0;
+def REQ_SAVE = 1;
+def REQ_LOAD = 2;
+
+// Request Status
+def IO_STATUS_FREE = 0;
+def IO_STATUS_PENDING = 1;
+def IO_STATUS_COMPLETED = 2;
+def IO_STATUS_FAILED = 3;
+
+// We need a Data struct that can hold a chunk's data for off-thread processing
+struct ChunkData {
+    blocks: int[16][32][16];
+    light: int[16][32][16];
+    plant_count: int;
+    plants: Plant[64];
+}
+
+struct IORequest {
+    status: int;      // Thread-safe flag
+    type: int;        // REQ_SAVE or REQ_LOAD
+    cx: int;
+    cz: int;
+    target_idx: int;  // Index in global chunks array (for writeback)
+    data: ChunkData;  // Data buffer (Copy for save, Target for load)
+}
+
+struct AsyncSystem {
+    requests: IORequest[64];
+    running: int;
+}
+
+// Thread-safe pseudo-random number generator
+// Linear Congruential Generator
+fn my_rand(seed: int*) -> int {
+    raw {
+        *seed = (*seed * 1103515245 + 12345) & 0x7fffffff;
+        return *seed;
+    }
+    return 0; // Unreachable
+}
+
+fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
+    // 1. Generate Heightmap
+    let heights: int[16][16];
+    
+    raw {
+        // We use Raylib's GenImagePerlinNoise. 
+        Image noise = GenImagePerlinNoise(16, 16, x * 16, z * 16, 0.5f);
+        Color* pixels = LoadImageColors(noise);
+        
+        for(int i=0; i<16; i++) {
+            for(int j=0; j<16; j++) {
+                // pixels is row-major
+                Color col = pixels[j * 16 + i];
+                int val = col.r;
+                
+                // Map 0..255 to height 3..30
+                int h = 3 + (val / 12);
+                if (h > 30) h = 30;
+                heights[i][j] = h;
+            }
+        }
+        UnloadImageColors(pixels);
+        UnloadImage(noise);
+    }
+    
+    // 2. Fill Blocks
+    for cx in 0..16 {
+        for cz in 0..16 {
+            let h = heights[cx][cz];
+            for cy in 0..32 {
+                let l = 0;
+                if cy < h - 1 {
+                    data.blocks[cx][cy][cz] = BLOCK_STONE;
+                } else if cy < h {
+                    data.blocks[cx][cy][cz] = BLOCK_DIRT;
+                } else if cy == h {
+                    data.blocks[cx][cy][cz] = BLOCK_GRASS;
+                    l = 15;
+                } else {
+                    data.blocks[cx][cy][cz] = BLOCK_AIR;
+                    l = 15;
+                }
+                data.light[cx][cy][cz] = l;
+            }
+        }
+    }
+    
+    // 3. Plants/Trees
+    data.plant_count = 0;
+    
+    // Deterministic seed for this chunk
+    let seed = x * 73856093 ^ z * 19349663;
+    
+    for cx in 0..16 {
+        for cz in 0..16 {
+            let h = heights[cx][cz];
+            // Grass
+            if data.blocks[cx][h][cz] == BLOCK_GRASS && h < 31 {
+                let r = my_rand(&seed) % 100;
+                
+                if r < 10 { // Tree chance
+                     if cx > 1 && cx < 14 && cz > 1 && cz < 14 {
+                        // Tree
+                        let th = 4 + (my_rand(&seed) % 3);
+                        for i in 0..th {
+                            if h+1+i < 32 {
+                                data.blocks[cx][h+1+i][cz] = BLOCK_LOG;
+                            }
+                        }
+                        // Leaves
+                        let ly = h + 1 + th;
+                        for lx in (cx-2)..(cx+3) {
+                            for lz in (cz-2)..(cz+3) {
+                                for lyy in (ly-2)..(ly+2) {
+                                    if lyy < 32 && lyy >= 0 {
+                                        // Simple blob check d^2 < r^2
+                                        if data.blocks[lx][lyy][lz] == BLOCK_AIR {
+                                            data.blocks[lx][lyy][lz] = BLOCK_LEAVES;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                     }
+                }
+                else if r < 30 { // Tall grass chance
+                    if data.plant_count < 64 {
+                        data.plants[data.plant_count].x = (float)cx + 0.5;
+                        data.plants[data.plant_count].y = (float)(h + 1);
+                        data.plants[data.plant_count].z = (float)cz + 0.5;
+                        data.plants[data.plant_count].type = BLOCK_TALLGRASS;
+                        data.plant_count = data.plant_count + 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+raw {
+    #if defined(_WIN32)
+        // Prevent Windows.h from polluting global namespace
+        #define WIN32_LEAN_AND_MEAN
+        #define NOGDI
+        #define NOUSER
+        #include <windows.h>
+        
+        // Undefine common collisions just in case
+        #undef Near
+        #undef Far
+        #undef Rectangle
+        #undef CloseWindow
+        #undef ShowCursor
+        
+        HANDLE db_thread;
+        DWORD WINAPI db_worker(LPVOID lpParam);
+        CRITICAL_SECTION db_cs;
+    #else
+        #include <pthread.h>
+        #include <unistd.h>
+        pthread_t db_thread;
+        void* db_worker(void* is_running_ptr);
+        pthread_mutex_t db_mutex;
+    #endif
+
+    // The Queue
+    typedef struct {
+        volatile int status;
+        int type;
+        int cx;
+        int cz;
+        int target_idx;
+        ChunkData data;
+    } RawIORequest;
+
+    RawIORequest io_queue[64];
+    volatile int system_running = 0;
+    
+    // Prototype for generator
+    void generate_chunk_data(ChunkData* data, int x, int z);
+
+
+    // Worker Function
+    #if defined(_WIN32)
+    DWORD WINAPI db_worker(LPVOID lpParam)
+    #else
+    void* db_worker(void* arg)
+    #endif
+    {
+        while(system_running) {
+            int worked = 0;
+            for(int i=0; i<64; i++) {
+                if(io_queue[i].status == 1) { // IO_STATUS_PENDING
+                    // Processor
+                    RawIORequest *req = &io_queue[i];
+                    char filename[256];
+                    sprintf(filename, "world/chunk_%d_%d.dat", req->cx, req->cz);
+
+                    if(req->type == 1) { // SAVE
+                        // Write to disk
+                        FILE *f = fopen(filename, "wb");
+                        if(f) {
+                            fwrite(&req->data, sizeof(ChunkData), 1, f);
+                            fclose(f);
+                        }
+                        req->status = 0; // Back to FREE immediately for Save
+                    }
+                    else if(req->type == 2) { // LOAD
+                        FILE *f = fopen(filename, "rb");
+                        if(f) {
+                            size_t read = fread(&req->data, sizeof(ChunkData), 1, f);
+                            fclose(f);
+                            if(read == 1) {
+                                req->status = 2; // COMPLETED
+                            } else {
+                                // FAILED TO LOAD -> GENERATE
+                                generate_chunk_data(&req->data, req->cx, req->cz);
+                                req->status = 2; // COMPLETED (Generated)
+                            }
+                        } else {
+                             // FAILED TO LOAD -> GENERATE
+                             generate_chunk_data(&req->data, req->cx, req->cz);
+                             req->status = 2; // COMPLETED (Generated)
+                        }
+                    }
+                    worked = 1;
+                }
+            }
+            
+            if(!worked) {
+                // Sleep to avoid burning CPU
+                #if defined(_WIN32)
+                Sleep(5);
+                #else
+                usleep(5000);
+                #endif
+            }
+        }
+        return 0;
+    }
+}
+
+fn init_persistence() {
+    raw {
+        if (!DirectoryExists("world")) {
+            MakeDirectory("world");
+        }
+        
+        // Zero queue
+        for(int i=0; i<64; i++) io_queue[i].status = 0;
+        
+        system_running = 1;
+
+        #if defined(_WIN32)
+            CreateThread(NULL, 0, db_worker, NULL, 0, NULL);
+        #else
+            pthread_create(&db_thread, NULL, db_worker, NULL);
+        #endif
+    }
+    rl::TraceLog(rl::LOG_INFO, "Async Persistence Initialized");
+}
+
+fn request_save_async(c: Chunk*) {
+    if c == NULL { return; }
+    if c.x == -9999 { return; }
+
+    raw {
+        // Find free slot
+        int slot = -1;
+        for(int i=0; i<64; i++) {
+            if(io_queue[i].status == 0) {
+                slot = i;
+                break;
+            }
+        }
+        
+        if(slot != -1) {
+            // Setup Request
+            io_queue[slot].type = 1; // SAVE
+            io_queue[slot].cx = c->x;
+            io_queue[slot].cz = c->z;
+            io_queue[slot].target_idx = -1; // Not needed for save
+            
+            // Copy Data
+            memcpy(io_queue[slot].data.blocks, c->blocks, sizeof(io_queue[slot].data.blocks));
+            memcpy(io_queue[slot].data.light, c->light, sizeof(io_queue[slot].data.light));
+            io_queue[slot].data.plant_count = c->plant_count;
+            memcpy(io_queue[slot].data.plants, c->plants, sizeof(io_queue[slot].data.plants));
+            
+            // Commit
+            io_queue[slot].status = 1; // PENDING
+        } else {
+            TraceLog(LOG_WARNING, "Async Save Queue Full!");
+        }
+    }
+}
+
+fn request_load_async(idx: int, cx: int, cz: int) {
+    raw {
+        // Find free slot
+        int slot = -1;
+        for(int i=0; i<64; i++) {
+            if(io_queue[i].status == 0) {
+                slot = i;
+                break;
+            }
+        }
+        
+        if(slot != -1) {
+            io_queue[slot].type = 2; // LOAD
+            io_queue[slot].cx = cx;
+            io_queue[slot].cz = cz;
+            io_queue[slot].target_idx = idx;
+            io_queue[slot].status = 1; // PENDING
+        }
+    }
+}
+
+// Returns 1 if chunk was loaded/generated this frame
+fn poll_async_results(chunks: Chunk*, num_chunks: int) {
+    raw {
+        int processed_count = 0;
+        for(int i=0; i<64; i++) {
+            if(io_queue[i].status == 2) { // COMPLETED LOAD (or Generated)
+                // Limit processing to 1 per frame to avoid lag spikes
+                if(processed_count >= 1) break;
+
+                int idx = io_queue[i].target_idx;
+                if(idx >= 0 && idx < num_chunks) {
+                    // Apply Data
+                    chunks[idx].x = io_queue[i].cx;
+                    chunks[idx].z = io_queue[i].cz;
+                    
+                    memcpy(chunks[idx].blocks, io_queue[i].data.blocks, sizeof(chunks[idx].blocks));
+                    memcpy(chunks[idx].light, io_queue[i].data.light, sizeof(chunks[idx].light));
+                    chunks[idx].plant_count = io_queue[i].data.plant_count;
+                    memcpy(chunks[idx].plants, io_queue[i].data.plants, sizeof(chunks[idx].plants));
+                    
+                    chunks[idx].mesh_dirty = 1;
+                    chunks[idx].mesh_built = 0;
+                    chunks[idx].plant_mesh_built = 0;
+                    
+                    // Propagate light now that data is loaded
+                    // This is heavy, so we definitely want to limit how many times we do this per frame
+                    propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
+                    
+                    processed_count++;
+                }
+                io_queue[i].status = 0; // Free
+            }
+            // Status 3 (FAILED) is now handled in thread by generating
+        }
+    }
+}
+
+// --- Player Persistence ---
+
+struct PlayerSaveData {
+    x: float;
+    y: float;
+    z: float;
+    selected_block: int;
+}
+
+fn save_player_data(x: float, y: float, z: float, block: int) {
+    raw {
+        if (!DirectoryExists("world")) MakeDirectory("world");
+        
+        PlayerSaveData pd;
+        pd.x = x;
+        pd.y = y;
+        pd.z = z;
+        pd.selected_block = block;
+        
+        TraceLog(LOG_INFO, "Saving Player: %.2f, %.2f, %.2f, Block: %d", x, y, z, block);
+        
+        FILE *f = fopen("world/player.dat", "wb");
+        if(f) {
+            fwrite(&pd, sizeof(PlayerSaveData), 1, f);
+            fclose(f);
+            TraceLog(LOG_INFO, "Player data saved successfully.");
+        } else {
+            TraceLog(LOG_ERROR, "Failed to open world/player.dat for writing.");
+        }
+    }
+}
+
+fn load_player_data(x: float*, y: float*, z: float*, block: int*) -> int {
+    let success = 0;
+    raw {
+        FILE *f = fopen("world/player.dat", "rb");
+        if(f) {
+            PlayerSaveData pd;
+            size_t read = fread(&pd, sizeof(PlayerSaveData), 1, f);
+            if(read == 1) {
+                *x = pd.x;
+                *y = pd.y;
+                *z = pd.z;
+                *block = pd.selected_block;
+                success = 1;
+                TraceLog(LOG_INFO, "Player data loaded: %.2f, %.2f, %.2f, Block: %d", pd.x, pd.y, pd.z, pd.selected_block);
+            } else {
+                TraceLog(LOG_WARNING, "Failed to read player data. Read count: %d", read);
+            }
+            fclose(f);
+        } else {
+             TraceLog(LOG_INFO, "No player data found (New Game).");
+        }
+    }
+    return success;
+}
