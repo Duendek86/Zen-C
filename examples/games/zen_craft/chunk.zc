@@ -97,23 +97,32 @@ fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int)
     }
 }
 
-fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
-    if y < 0 || y >= 32 { return 15; } // Sky is bright
+fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, channel: int) -> int {
+    if y < 0 || y >= 32 { 
+        if channel == 0 { return 15; } // Sky is bright
+        return 0; // Block light is dark in sky
+    }
     
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
-
+    
     let idx = get_chunk_index(cx, cz);
 
     if chunks[idx].x == cx && chunks[idx].z == cz {
         let lx = ((x % 16) + 16) % 16;
         let lz = ((z % 16) + 16) % 16;
-        return chunks[idx].light[lx][y][lz];
+        let val = chunks[idx].light[lx][y][lz];
+        
+        if channel == 0 {
+            return val & 0xF; // Sky Light (Lower nibble)
+        } else {
+            return (val >> 4) & 0xF; // Block Light (Upper nibble)
+        }
     }
     return 0; // Unloaded chunks have no light info
 }
 
-fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val: int) {
+fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val: int, channel: int) {
     if y < 0 || y >= 32 { return; }
 
     let cx = (int)floor((float)x / 16.0);
@@ -124,7 +133,16 @@ fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val
     if chunks[idx].x == cx && chunks[idx].z == cz {
         let lx = ((x % 16) + 16) % 16;
         let lz = ((z % 16) + 16) % 16;
-        chunks[idx].light[lx][y][lz] = val;
+        
+        // Read-Modify-Write
+        let current = chunks[idx].light[lx][y][lz];
+        if channel == 0 {
+            // Set Sky Light (Lower)
+            chunks[idx].light[lx][y][lz] = (current & 0xF0) | (val & 0xF);
+        } else {
+            // Set Block Light (Upper)
+            chunks[idx].light[lx][y][lz] = (current & 0x0F) | ((val & 0xF) << 4);
+        }
     }
 }
 
@@ -136,24 +154,35 @@ fn update_sunlight_column(chunks: Chunk*, num_chunks: int, x: int, z: int) {
         let blk = get_block(chunks, num_chunks, x, y, z);
         
         if casting_shadow == 0 {
-             if blk != BLOCK_AIR {
+             // Helper macro
+             #ifdef IS_TRANSPARENT
+             #undef IS_TRANSPARENT
+             #endif
+             #define IS_TRANSPARENT(b) ((b) == BLOCK_AIR || ((b) >= 10 && (b) <= 14) || (b) == BLOCK_TALLGRASS)
+             
+             if (!IS_TRANSPARENT(blk)) {
                  // Found surface. This block is SOLILD. It stops sunlight.
-                 // It should NOT be lit itself (internally), otherwise it propagates light to neighbors underneath/inside.
-                 // With our new mesh generation, it will still LOOK bright on top because the AIR above it is 15.
-                 set_light_global(chunks, num_chunks, x, y, z, 0);
+                 // Set Sky Light to 0 (Channel 0)
+                 set_light_global(chunks, num_chunks, x, y, z, 0, 0);
                  casting_shadow = 1;
              } else {
-                 set_light_global(chunks, num_chunks, x, y, z, 15);
+                 // Sky Light 15 (Channel 0)
+                 set_light_global(chunks, num_chunks, x, y, z, 15, 0);
              }
         } else {
              // Underground - start with minimal light
-             set_light_global(chunks, num_chunks, x, y, z, 0);
+             // Sky Light 0 (Channel 0)
+             set_light_global(chunks, num_chunks, x, y, z, 0, 0);
         }
+        
+        // Always reset Block Light (Channel 1) to 0 during full recalc
+        // Torches will be re-added in step 1.5
+        set_light_global(chunks, num_chunks, x, y, z, 0, 1);
     }
 }
 
-// Propagate light using BFS Queue
-fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
+// Internal propagation for a specific channel
+fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel: int) {
     let gx_base = c.x * 16;
     let gz_base = c.z * 16;
     
@@ -165,28 +194,50 @@ fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
     for x in 0..16 {
         for y in 0..32 {
             for z in 0..16 {
-                let current_light = c.light[x][y][z];
+                let current_light = 0;
                 
-                // If this block emits light (sunlight column), it's a source
+                // Read specific channel
+                let val = c.light[x][y][z];
+                if channel == 0 {
+                    current_light = val & 0xF;
+                } else {
+                    current_light = (val >> 4) & 0xF;
+                }
+                
+                // If this block emits light (sunlight column OR torch), it's a source
+                // Note: Sunlight is set in update_sunlight_column (Channel 0)
+                // Torches should be set in place_torch (Channel 1)
                 if current_light > 0 {
                     queue_push(&q, gx_base + x, y, gz_base + z);
                 } 
-                else if c.blocks[x][y][z] == BLOCK_AIR {
+                else if (IS_TRANSPARENT(c.blocks[x][y][z])) {
                     // Check neighbors for incoming light
                     let gx = gx_base + x;
                     let gz = gz_base + z;
                     
                     let max_n = 0;
                     // Check all 6 neighbors
-                    let l_px = get_light_global(chunks, num_chunks, gx + 1, y, gz); if l_px > max_n { max_n = l_px; }
-                    let l_nx = get_light_global(chunks, num_chunks, gx - 1, y, gz); if l_nx > max_n { max_n = l_nx; }
-                    let l_py = get_light_global(chunks, num_chunks, gx, y + 1, gz); if l_py > max_n { max_n = l_py; }
-                    let l_ny = get_light_global(chunks, num_chunks, gx, y - 1, gz); if l_ny > max_n { max_n = l_ny; }
-                    let l_pz = get_light_global(chunks, num_chunks, gx, y, gz + 1); if l_pz > max_n { max_n = l_pz; }
-                    let l_nz = get_light_global(chunks, num_chunks, gx, y, gz - 1); if l_nz > max_n { max_n = l_nz; }
+                    let l_px = get_light_global(chunks, num_chunks, gx + 1, y, gz, channel); if l_px > max_n { max_n = l_px; }
+                    let l_nx = get_light_global(chunks, num_chunks, gx - 1, y, gz, channel); if l_nx > max_n { max_n = l_nx; }
+                    let l_py = get_light_global(chunks, num_chunks, gx, y + 1, gz, channel); if l_py > max_n { max_n = l_py; }
+                    let l_ny = get_light_global(chunks, num_chunks, gx, y - 1, gz, channel); if l_ny > max_n { max_n = l_ny; }
+                    let l_pz = get_light_global(chunks, num_chunks, gx, y, gz + 1, channel); if l_pz > max_n { max_n = l_pz; }
+                    let l_nz = get_light_global(chunks, num_chunks, gx, y, gz - 1, channel); if l_nz > max_n { max_n = l_nz; }
                     
                     if max_n > 1 {
-                        c.light[x][y][z] = max_n - 1;
+                        // Update local light (Read-Modify-Write done by set_light_global if we used it, 
+                        // but here we access c.light directly for speed? No, let's use set_light_global to be safe)
+                        // Actually, direct access is faster for local chunk.
+                        // c.light[x][y][z] = ...
+                        
+                        // We need to preserve the OTHER channel.
+                        let old_val = c.light[x][y][z];
+                        if channel == 0 {
+                            c.light[x][y][z] = (old_val & 0xF0) | ((max_n - 1) & 0xF);
+                        } else {
+                            c.light[x][y][z] = (old_val & 0x0F) | (((max_n - 1) & 0xF) << 4);
+                        }
+                        
                         queue_push(&q, gx, y, gz);
                     }
                 }
@@ -198,7 +249,7 @@ fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
     while !queue_is_empty(&q) {
         let node = queue_pop(&q);
         
-        let light = get_light_global(chunks, num_chunks, node.x, node.y, node.z);
+        let light = get_light_global(chunks, num_chunks, node.x, node.y, node.z, channel);
         if light <= 1 { continue; } // Cannot propagate further
         
         // Try to propagate to 6 neighbors
@@ -207,53 +258,60 @@ fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         
         // +X
         nx = node.x + 1; ny = node.y; nz = node.z;
-        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
-             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
-                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+        if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
+             if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
                  queue_push(&q, nx, ny, nz);
              }
         }
         // -X
         nx = node.x - 1; ny = node.y; nz = node.z;
-        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
-             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
-                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+        if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
+             if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
                  queue_push(&q, nx, ny, nz);
              }
         }
         // +Y
         nx = node.x; ny = node.y + 1; nz = node.z;
-        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
-             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
-                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+        if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
+             if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
                  queue_push(&q, nx, ny, nz);
              }
         }
         // -Y
         nx = node.x; ny = node.y - 1; nz = node.z;
-        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
-             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
-                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+        if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
+             if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
                  queue_push(&q, nx, ny, nz);
              }
         }
         // +Z
         nx = node.x; ny = node.y; nz = node.z + 1;
-        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
-             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
-                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+        if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
+             if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
                  queue_push(&q, nx, ny, nz);
              }
         }
         // -Z
         nx = node.x; ny = node.y; nz = node.z - 1;
-        if get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_AIR || get_block(chunks, num_chunks, nx, ny, nz) == BLOCK_TALLGRASS {
-             if get_light_global(chunks, num_chunks, nx, ny, nz) < light - 1 {
-                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1);
+        if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
+             if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
+                 set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
                  queue_push(&q, nx, ny, nz);
              }
         }
     }
+}
+
+fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
+    // Propagate Sky Light (Channel 0)
+    propagate_light_internal(c, chunks, num_chunks, 0);
+    // Propagate Block Light (Channel 1)
+    propagate_light_internal(c, chunks, num_chunks, 1);
 }
 
 // Full recalculation: Clear light (via update_sunlight_column) then propagate
@@ -268,6 +326,29 @@ fn recalculate_chunk_lighting(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         while lz < 16 {
             update_sunlight_column(chunks, num_chunks, gx_base + lx, gz_base + lz);
             lz = lz + 1;
+        }
+        lx = lx + 1;
+    }
+    
+    // 1.5 Set Emission for Light Sources (Torches)
+    lx = 0;
+    while lx < 16 {
+        let ly = 0;
+        while ly < 32 {
+            let lz = 0;
+            while lz < 16 {
+                let blk = c.blocks[lx][ly][lz];
+                // Check if Torch - set to max light (8, reduced from 15 for half range/brightness)
+                if blk >= 10 && blk <= 14 {
+                    // We need to keep Sky Light (Channel 0) intact!
+                    // Read current
+                    let current = c.light[lx][ly][lz];
+                    // Set Block Light to 8 (Upper nibble)
+                    c.light[lx][ly][lz] = (current & 0x0F) | (8 << 4);
+                }
+                lz = lz + 1;
+            }
+            ly = ly + 1;
         }
         lx = lx + 1;
     }

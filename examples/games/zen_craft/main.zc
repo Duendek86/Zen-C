@@ -16,7 +16,8 @@ import "persistence.zc";
 import "title_generator.zc";
 
 def STATE_TITLE = 0;
-def STATE_GAME = 1;
+def STATE_LOADING = 1;
+def STATE_GAME = 2;
 
 fn main() {
     rl::InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, TITLE);
@@ -70,62 +71,18 @@ fn main() {
         if current_state == STATE_TITLE {
             // Logic
             if rl::IsKeyPressed(rl::KEY_ENTER) {
-                // TRANSITION TO GAME
-                current_state = STATE_GAME;
+                // TRANSITION TO LOADING
+                current_state = STATE_LOADING;
                 
-                // 1. Clear title chunks
+                // Clear title chunks
                 for i in 0..MAX_CHUNKS {
                     chunks[i].x = -9999;
                     chunks[i].z = -9999;
                     chunks[i].mesh_built = 0;
                 }
                 
-                // 2. Switch World
+                // Switch World
                 set_game_world_dir("world");
-                
-                // 3. Load Player (or use defaults)
-                let start_x: float = 10.0;
-                let start_y: float = 20.0; // Higher default to be safe
-                let start_z: float = 10.0;
-                let loaded_save = load_player_data(&start_x, &start_y, &start_z, &selected_block);
-                
-                // 4. Pre-load the chunk at spawn position SYNCHRONOUSLY
-                let spawn_cx = (int)floor(start_x / 16.0);
-                let spawn_cz = (int)floor(start_z / 16.0);
-                let spawn_idx = get_chunk_index(spawn_cx, spawn_cz);
-                
-                if chunks[spawn_idx].x != spawn_cx || chunks[spawn_idx].z != spawn_cz {
-                    chunks[spawn_idx] = Chunk::new(spawn_cx, spawn_cz);
-                    propagate_light_in_chunk(&chunks[spawn_idx], &chunks[0], MAX_CHUNKS);
-                }
-                
-                // 5. Find safe spawn height (if new game)
-                if loaded_save == 0 {
-                    // Scan from top to find highest solid block
-                    for h in 0..32 {
-                        let y = 31 - h;
-                        let blk = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y, (int)start_z);
-                        if blk != BLOCK_AIR && blk != BLOCK_TALLGRASS {
-                            // Found surface! Check 2 blocks above are clear
-                            let above1 = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y + 1, (int)start_z);
-                            let above2 = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y + 2, (int)start_z);
-                            
-                            if (above1 == BLOCK_AIR || above1 == BLOCK_TALLGRASS) && 
-                               (above2 == BLOCK_AIR || above2 == BLOCK_TALLGRASS) {
-                                // Safe! Spawn here
-                                start_y = (float)(y + 1) + 0.1;
-                            } else {
-                                // Blocked (tree?), try to find clear spot above
-                                start_y = (float)(y + 3) + 0.1;
-                            }
-                            break;
-                        }
-                    }
-                }
-                
-                p = Player::new(start_x, start_y, start_z);
-                
-                rl::DisableCursor();
             }
 
             // Chunk Loading for Title (We need to load the sign chunks)
@@ -163,6 +120,138 @@ fn main() {
             
             rl::EndDrawing();
         }
+        else if current_state == STATE_LOADING {
+            // --- LOADING SCREEN LOOP ---
+            
+            raw {
+                static int loading_done = 0;
+                static float start_x = 10.0f;
+                static float start_y = 20.0f;
+                static float start_z = 10.0f;
+                static float start_yaw = 0.0f;
+                static float start_pitch = 0.0f;
+                static int loaded_save = 0;
+                
+                // ONE-TIME: Load player data
+                static int player_loaded = 0;
+                if(!player_loaded) {
+                    player_loaded = 1;
+                    loaded_save = load_player_data(&start_x, &start_y, &start_z, &selected_block, &start_yaw, &start_pitch);
+                }
+                
+                // GENERATE/LOAD all chunks in render distance
+                int pcx = (int)floor(start_x / 16.0);
+                int pcz = (int)floor(start_z / 16.0);
+                int range_limit = RENDER_DISTANCE + 1;
+                
+                for(int dx = -RENDER_DISTANCE; dx < range_limit; dx++) {
+                    for(int dz = -RENDER_DISTANCE; dz < range_limit; dz++) {
+                        int cx = pcx + dx;
+                        int cz = pcz + dz;
+                        int idx = get_chunk_index(cx, cz);
+                        
+                        if(chunks[idx].x != cx || chunks[idx].z != cz) {
+                            chunks[idx] = load_chunk_sync(cx, cz);
+                            propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
+                            build_chunk_mesh(&chunks[idx], &chunks[0], MAX_CHUNKS);
+                            build_plant_mesh(&chunks[idx], get_tex_grass());
+                        }
+                    }
+                }
+                
+                // Find safe spawn if new game
+                if(!loaded_save) {
+                    for(int h = 0; h < 32; h++) {
+                        int y = 31 - h;
+                        int blk = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y, (int)start_z);
+                        if(blk != BLOCK_AIR && blk != 10) { // Not air, not tallgrass
+                            int above1 = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y + 1, (int)start_z);
+                            int above2 = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y + 2, (int)start_z);
+                            
+                            if((above1 == BLOCK_AIR || above1 == 10) && (above2 == BLOCK_AIR || above2 == 10)) {
+                                start_y = (float)(y + 1) + 0.1f;
+                            } else {
+                                start_y = (float)(y + 3) + 0.1f;
+                            }
+                            break;
+                        }
+                    }
+                }
+                
+                // Check if all chunks ready
+                int all_ready = 1;
+                for(int dx = -RENDER_DISTANCE; dx < range_limit; dx++) {
+                    for(int dz = -RENDER_DISTANCE; dz < range_limit; dz++) {
+                        int cx = pcx + dx;
+                        int cz = pcz + dz;
+                        int idx = get_chunk_index(cx, cz);
+                        if(chunks[idx].mesh_built == 0) {
+                            all_ready = 0;
+                            break;
+                        }
+                    }
+                    if(!all_ready) break;
+                }
+                
+                if(all_ready && !loading_done) {
+                    loading_done = 1;
+                }
+            }
+            
+            // Check if loading complete and get spawn position (outside raw block)
+            let should_transition = 0;
+            let spawn_x: float = 0.0;
+            let spawn_y: float = 0.0;
+            let spawn_z: float = 0.0;
+            let spawn_yaw: float = 0.0;
+            let spawn_pitch: float = 0.0;
+            
+            raw {
+                if(loading_done == 1) {
+                    should_transition = 1;
+                    spawn_x = start_x;
+                    spawn_y = start_y;
+                    spawn_z = start_z;
+                    spawn_yaw = start_yaw;
+                    spawn_pitch = start_pitch;
+                }
+            }
+            
+            if should_transition == 1 {
+                // Initialize player with loaded position (NOT in raw block!)
+                p = Player::new(spawn_x, spawn_y, spawn_z);
+                
+                // Apply saved camera direction
+                p.yaw = spawn_yaw;
+                p.pitch = spawn_pitch;
+                
+                current_state = STATE_GAME;
+                rl::DisableCursor();
+            }
+            
+            // Draw loading screen
+            rl::BeginDrawing();
+            rl::ClearBackground(rl::Color{r: 20, g: 20, b: 30, a: 255});
+            
+            let sw = rl::GetScreenWidth();
+            let sh = rl::GetScreenHeight();
+            let dots = ((int)(rl::GetTime() * 2.0) % 4);
+            
+            let loading_text: char*;
+            if dots == 0 {
+                loading_text = "Generating World.";
+            } else if dots == 1 {
+                loading_text = "Generating World..";
+            } else if dots == 2 {
+                loading_text = "Generating World...";
+            } else {
+                loading_text = "Generating World";
+            }
+            
+            rl::DrawText(loading_text, sw/2 - 200, sh/2, 40, rl::WHITE);
+            
+            rl::EndDrawing();
+        }
         else {
              // --- GAME LOOP ---
              
@@ -182,14 +271,16 @@ fn main() {
                              request_save_async(&chunks[idx]);
                          }
                          
-                         // SYNCHRONOUS chunk generation (thread-safe!)
-                         chunks[idx] = Chunk::new(cx, cz);
+                         // Load synchronously (try disk first, generate if not found)
+                         chunks[idx] = load_chunk_sync(cx, cz);
                          
-                         // Propagate light after generation
+                         // Propagate light after loading/generation
                          propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
                      }
                  }
             }
+            
+            // No longer need poll_async_results for game chunks (only title screen uses async)
             
             (&p).update(&chunks[0], MAX_CHUNKS, dt);
     
@@ -199,9 +290,9 @@ fn main() {
             if rl::IsKeyPressed(rl::KEY_THREE) { selected_block = BLOCK_STONE; }
             if rl::IsKeyPressed(rl::KEY_FOUR) { selected_block = BLOCK_LOG; }
             if rl::IsKeyPressed(rl::KEY_FIVE) { selected_block = BLOCK_LEAVES; }
+            if rl::IsKeyPressed(rl::KEY_SIX) { selected_block = BLOCK_TORCH; }
     
-            // --- DAY/NIGHT CYCLE ---
-            if rl::IsKeyPressed(rl::KEY_P) { day_time += 0.1; } // Debug skip
+            rl::BeginDrawing();
             
             // Configurable cycle duration
             let day_duration = 120.0; // 2 minutes for testing (eventually 1200.0 for 20 mins)
@@ -231,46 +322,68 @@ fn main() {
                 z: 0.2 // Slight tilt
             };
             
-            // Light Color Interpolation
+            // Light Color Interpolation - Smooth continuous transitions
             let light_col = rl::Vector3{x: 1.0, y: 1.0, z: 1.0};
             let amb_col = rl::Vector3{x: 0.2, y: 0.2, z: 0.2};
             
-            // Gradients
-            // Day: (1.0, 1.0, 0.9) - Sun, (0.5, 0.5, 0.6) - Amb
-            // Sunset: (1.0, 0.5, 0.2) - Sun, (0.3, 0.2, 0.3) - Amb
-            // Night: (0.1, 0.1, 0.2) - Moon, (0.05, 0.05, 0.1) - Amb
+            // Use smooth interpolation instead of discrete blocks
+            // 0.0 = Dawn, 0.25 = Noon, 0.5 = Dusk, 0.75 = Midnight, 1.0 = Dawn
             
-            if day_time < 0.2 { // Morning
-                // Sunrise -> Day
-                // 0.0 to 0.2
-                // Blend Reddish to White
-                // Simple approx:
-                light_col = rl::Vector3{x: 1.0, y: 0.8 + day_time, z: 0.6 + day_time*2.0};
-                amb_col = rl::Vector3{x: 0.3, y: 0.3, z: 0.4};
-            }
-            else if day_time < 0.4 { // Day
-                light_col = rl::Vector3{x: 1.0, y: 1.0, z: 0.95};
-                amb_col = rl::Vector3{x: 0.5, y: 0.55, z: 0.6};
-            }
-            else if day_time < 0.5 { // Sunset
-                // 0.4 to 0.5
-                let t = (day_time - 0.4) * 10.0; // 0..1
-                // White -> Orange
-                light_col = rl::Vector3{x: 1.0, y: 1.0 - t*0.5, z: 0.95 - t*0.8};
-                amb_col = rl::Vector3{x: 0.5 - t*0.2, y: 0.55 - t*0.3, z: 0.6 - t*0.3};
-            }
-            else if day_time < 0.55 { // Dusk
-                 light_col = rl::Vector3{x: 0.8, y: 0.4, z: 0.2};
-                 amb_col = rl::Vector3{x: 0.2, y: 0.2, z: 0.25};
-            }
-            else { // Night
-                // Moon light (dim, blueish)
-                light_col = rl::Vector3{x: 0.1, y: 0.1, z: 0.2};
-                amb_col = rl::Vector3{x: 0.05, y: 0.05, z: 0.1};
+            if day_time < 0.25 {
+                // Dawn -> Day (0.0 to 0.25)
+                let t = day_time / 0.25; // 0..1
+                // Interpolate from orange dawn to bright day
+                light_col.x = 1.0;
+                light_col.y = 0.6 + t * 0.4; // 0.6 -> 1.0
+                light_col.z = 0.4 + t * 0.55; // 0.4 -> 0.95
                 
-                // If night, emulate moon direction (opposite to sun)
-                 sun_dir.x = -sun_dir.x;
-                 sun_dir.y = -sun_dir.y;
+                amb_col.x = 0.2 + t * 0.3; // 0.2 -> 0.5
+                amb_col.y = 0.2 + t * 0.35; // 0.2 -> 0.55
+                amb_col.z = 0.3 + t * 0.3; // 0.3 -> 0.6
+            }
+            else if day_time < 0.5 {
+                // Day -> Sunset (0.25 to 0.5)
+                let t = (day_time - 0.25) / 0.25; // 0..1
+                // Interpolate from bright day to orange sunset
+                light_col.x = 1.0;
+                light_col.y = 1.0 - t * 0.5; // 1.0 -> 0.5
+                light_col.z = 0.95 - t * 0.75; // 0.95 -> 0.2
+                
+                amb_col.x = 0.5 - t * 0.3; // 0.5 -> 0.2
+                amb_col.y = 0.55 - t * 0.35; // 0.55 -> 0.2
+                amb_col.z = 0.6 - t * 0.35; // 0.6 -> 0.25
+            }
+            else if day_time < 0.75 {
+                // Sunset -> Night (0.5 to 0.75)
+                let t = (day_time - 0.5) / 0.25; // 0..1
+                // Interpolate from orange sunset to dark night
+                light_col.x = 1.0 - t * 0.98; // 1.0 -> 0.02
+                light_col.y = 0.5 - t * 0.48; // 0.5 -> 0.02
+                light_col.z = 0.2 - t * 0.15; // 0.2 -> 0.05 (Moonlight)
+                
+                amb_col.x = 0.2 - t * 0.19; // 0.2 -> 0.01
+                amb_col.y = 0.2 - t * 0.19; // 0.2 -> 0.01
+                amb_col.z = 0.25 - t * 0.23; // 0.25 -> 0.02
+                
+                // Flip to moon
+                sun_dir.x = -sun_dir.x;
+                sun_dir.y = -sun_dir.y;
+            }
+            else {
+                // Night -> Dawn (0.75 to 1.0)
+                let t = (day_time - 0.75) / 0.25; // 0..1
+                // Interpolate from dark night to orange dawn
+                light_col.x = 0.02 + t * 0.98; // 0.02 -> 1.0
+                light_col.y = 0.02 + t * 0.58; // 0.02 -> 0.6
+                light_col.z = 0.05 + t * 0.35; // 0.05 -> 0.4
+                
+                amb_col.x = 0.01 + t * 0.19; // 0.01 -> 0.2
+                amb_col.y = 0.01 + t * 0.19; // 0.01 -> 0.2
+                amb_col.z = 0.02 + t * 0.28; // 0.02 -> 0.3
+                
+                // Moon direction
+                sun_dir.x = -sun_dir.x;
+                sun_dir.y = -sun_dir.y;
             }
             
             update_lighting_uniforms(sun_dir, light_col, amb_col);
@@ -302,7 +415,7 @@ fn main() {
             raw { rlDisableBackfaceCulling(); }
     
             let builds_in_frame = 0;
-            let max_builds = 1; 
+            let max_builds = 3; // Increased from 1 to reduce chunk pop-in 
     
             for i in 0..MAX_CHUNKS {
                 let c: Chunk* = &chunks[i];
@@ -330,13 +443,41 @@ fn main() {
                 if rl::IsMouseButtonPressed(rl::MOUSE_BUTTON_LEFT) {
                     set_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y, hit.z, BLOCK_AIR);
                     
+                    // Auto-destroy attached torches and tallgrass
+                    // Check block above for floor torches or tallgrass
+                    let above = get_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y + 1, hit.z);
+                    if above == BLOCK_TALLGRASS || above == 10 { // 10 = floor torch
+                        set_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y + 1, hit.z, BLOCK_AIR);
+                    }
+                    
+                    // Check all 4 sides for wall torches attached to this block
+                    let north = get_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y, hit.z + 1);
+                    if north == 11 { // North wall torch
+                        set_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y, hit.z + 1, BLOCK_AIR);
+                    }
+                    
+                    let south = get_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y, hit.z - 1);
+                    if south == 12 { // South wall torch
+                        set_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y, hit.z - 1, BLOCK_AIR);
+                    }
+                    
+                    let east = get_block(&chunks[0], MAX_CHUNKS, hit.x + 1, hit.y, hit.z);
+                    if east == 13 { // East wall torch
+                        set_block(&chunks[0], MAX_CHUNKS, hit.x + 1, hit.y, hit.z, BLOCK_AIR);
+                    }
+                    
+                    let west = get_block(&chunks[0], MAX_CHUNKS, hit.x - 1, hit.y, hit.z);
+                    if west == 14 { // West wall torch
+                        set_block(&chunks[0], MAX_CHUNKS, hit.x - 1, hit.y, hit.z, BLOCK_AIR);
+                    }
+                    
                     let cx = (int)floor((float)hit.x / 16.0);
                     let cz = (int)floor((float)hit.z / 16.0);
                     let idx = get_chunk_index(cx, cz);
                     
                     // Full recalc on this chunk AND neighbors to prevent light bleed
                     recalculate_chunk_lighting(&chunks[idx], &chunks[0], MAX_CHUNKS);
-                    chunks[idx].mesh_dirty = 1;
+                    build_chunk_mesh(&chunks[idx], &chunks[0], MAX_CHUNKS); // Rebuild immediately
                     
                     // Also recalculate neighbor chunks lighting
                     let idx_xm = get_chunk_index(cx - 1, cz);
@@ -346,22 +487,23 @@ fn main() {
                     
                     if chunks[idx_xm].x == cx - 1 && chunks[idx_xm].z == cz {
                         recalculate_chunk_lighting(&chunks[idx_xm], &chunks[0], MAX_CHUNKS);
-                        chunks[idx_xm].mesh_dirty = 1;
+                        build_chunk_mesh(&chunks[idx_xm], &chunks[0], MAX_CHUNKS); // Rebuild immediately
                     }
                     if chunks[idx_xp].x == cx + 1 && chunks[idx_xp].z == cz {
                         recalculate_chunk_lighting(&chunks[idx_xp], &chunks[0], MAX_CHUNKS);
-                        chunks[idx_xp].mesh_dirty = 1;
+                        build_chunk_mesh(&chunks[idx_xp], &chunks[0], MAX_CHUNKS); // Rebuild immediately
                     }
                     if chunks[idx_zm].x == cx && chunks[idx_zm].z == cz - 1 {
                         recalculate_chunk_lighting(&chunks[idx_zm], &chunks[0], MAX_CHUNKS);
-                        chunks[idx_zm].mesh_dirty = 1;
+                        build_chunk_mesh(&chunks[idx_zm], &chunks[0], MAX_CHUNKS); // Rebuild immediately
                     }
                     if chunks[idx_zp].x == cx && chunks[idx_zp].z == cz + 1 {
                         recalculate_chunk_lighting(&chunks[idx_zp], &chunks[0], MAX_CHUNKS);
-                        chunks[idx_zp].mesh_dirty = 1;
+                        build_chunk_mesh(&chunks[idx_zp], &chunks[0], MAX_CHUNKS); // Rebuild immediately
                     }
                 }
                 else if rl::IsMouseButtonPressed(rl::MOUSE_BUTTON_RIGHT) {
+                    // Default: place in adjacent block
                     let nx = hit.x + hit.face_x;
                     let ny = hit.y + hit.face_y;
                     let nz = hit.z + hit.face_z;
@@ -369,8 +511,50 @@ fn main() {
                     let dist_x = p.x - ((float)nx + 0.5);
                     let dist_y = p.y + 1.6 - ((float)ny + 0.5);
                     let dist_z = p.z - ((float)nz + 0.5);
-                    if (dist_x*dist_x + dist_y*dist_y + dist_z*dist_z) > 2.0 {
-                         set_block(&chunks[0], MAX_CHUNKS, nx, ny, nz, selected_block);
+                    
+                    // Allow closer placement for torches (non-solid blocks)
+                    let min_dist: float;
+                    if selected_block == BLOCK_TORCH {
+                        min_dist = 0.5;
+                    } else {
+                        min_dist = 1.0;
+                    }
+                    
+                    if (dist_x*dist_x + dist_y*dist_y + dist_z*dist_z) > min_dist {
+                         // Determine block type to place
+                         let block_to_place = selected_block;
+                         
+                         // Special handling for torches - detect which face we clicked
+                         if selected_block == BLOCK_TORCH {
+                             // hit.face_x/y/z tells us which face we clicked
+                             
+                             if hit.face_y == 1 {
+                                 // Top face -> floor torch (place in adjacent block above)
+                                 block_to_place = 10; // BLOCK_TORCH_FLOOR
+                             }
+                             else if hit.face_y == -1 {
+                                 // Bottom face -> don't place torches on ceiling
+                                 block_to_place = BLOCK_AIR; // Skip placement
+                             }
+                             else {
+                                 // Side face -> wall torch (in adjacent block, geometry makes it look attached)
+                                 // INVERTED: clicking north face places torch leaning south (toward wall)
+                                 if hit.face_z == 1 {
+                                     block_to_place = 12; // South-leaning torch (toward Z-)
+                                 }
+                                 else if hit.face_z == -1 {
+                                     block_to_place = 11; // North-leaning torch (toward Z+)
+                                 }
+                                 else if hit.face_x == 1 {
+                                     block_to_place = 14; // West-leaning torch (toward X-)
+                                 }
+                                 else if hit.face_x == -1 {
+                                     block_to_place = 13; // East-leaning torch (toward X+)
+                                 }
+                             }
+                         }
+                         
+                         set_block(&chunks[0], MAX_CHUNKS, nx, ny, nz, block_to_place);
                          
                          let cx = (int)floor((float)nx / 16.0);
                          let cz = (int)floor((float)nz / 16.0);
@@ -414,12 +598,12 @@ fn main() {
             rl::DrawRectangle(sw/2 - 5, sh/2 - 1, 10, 2, rl::RED);
             rl::DrawRectangle(sw/2 - 1, sh/2 - 5, 2, 10, rl::RED);
     
-            rl::DrawText("Zen Craft", 10, 10, 20, rl::DARKGRAY);
-            rl::DrawText("Select: 1-5", 10, 30, 20, rl::DARKGRAY);
-            rl::DrawText(rl::TextFormat("Block: %d", selected_block), 10, 50, 20, rl::BLACK);
-            rl::DrawText(rl::TextFormat("Pos: %.1f, %.1f, %.1f", p.x, p.y, p.z), 10, 75, 20, rl::BLACK);
+            rl::DrawText("Zen Craft", 10, 10, 40, rl::WHITE);
+            rl::DrawText("Select: 1-5", 10, 60, 30, rl::WHITE);
+            rl::DrawText(rl::TextFormat("Block: %d", selected_block), 10, 100, 30, rl::WHITE);
+            rl::DrawText(rl::TextFormat("Pos: %.1f, %.1f, %.1f", p.x, p.y, p.z), 10, 140, 30, rl::WHITE);
             
-            rl::DrawFPS(10, 100);
+            rl::DrawFPS(10, 180);
             rl::EndDrawing();
         }
     }
@@ -429,7 +613,7 @@ fn main() {
     // But we should only save PLAYER data if we are in GAME state.
     
     if current_state == STATE_GAME {
-        save_player_data(p.x, p.y, p.z, selected_block);
+        save_player_data(p.x, p.y, p.z, selected_block, p.yaw, p.pitch);
     }
 
     // Flush chunks

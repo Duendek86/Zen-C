@@ -413,9 +413,11 @@ struct PlayerSaveData {
     y: float;
     z: float;
     selected_block: int;
+    yaw: float;
+    pitch: float;
 }
 
-fn save_player_data(x: float, y: float, z: float, block: int) {
+fn save_player_data(x: float, y: float, z: float, block: int, yaw: float, pitch: float) {
     raw {
         if (!DirectoryExists(world_dir)) MakeDirectory(world_dir);
         
@@ -424,8 +426,10 @@ fn save_player_data(x: float, y: float, z: float, block: int) {
         pd.y = y;
         pd.z = z;
         pd.selected_block = block;
+        pd.yaw = yaw;
+        pd.pitch = pitch;
         
-        TraceLog(LOG_INFO, "Saving Player: %.2f, %.2f, %.2f, Block: %d", x, y, z, block);
+        TraceLog(LOG_INFO, "Saving Player: %.2f, %.2f, %.2f, Yaw: %.2f, Pitch: %.2f, Block: %d", x, y, z, yaw, pitch, block);
         
         char filename[256];
         sprintf(filename, "%s/player.dat", world_dir);
@@ -441,7 +445,7 @@ fn save_player_data(x: float, y: float, z: float, block: int) {
     }
 }
 
-fn load_player_data(x: float*, y: float*, z: float*, block: int*) -> int {
+fn load_player_data(x: float*, y: float*, z: float*, block: int*, yaw: float*, pitch: float*) -> int {
     let success = 0;
     raw {
         char filename[256];
@@ -456,8 +460,11 @@ fn load_player_data(x: float*, y: float*, z: float*, block: int*) -> int {
                 *y = pd.y;
                 *z = pd.z;
                 *block = pd.selected_block;
+                *yaw = pd.yaw;
+                *pitch = pd.pitch;
                 success = 1;
-                TraceLog(LOG_INFO, "Player data loaded: %.2f, %.2f, %.2f, Block: %d", pd.x, pd.y, pd.z, pd.selected_block);
+                TraceLog(LOG_INFO, "Player data loaded: %.2f, %.2f, %.2f, Yaw: %.2f, Pitch: %.2f, Block: %d", 
+                         pd.x, pd.y, pd.z, pd.yaw, pd.pitch, pd.selected_block);
             } else {
                 TraceLog(LOG_WARNING, "Failed to read player data. Read count: %d", read);
             }
@@ -467,4 +474,31 @@ fn load_player_data(x: float*, y: float*, z: float*, block: int*) -> int {
         }
     }
     return success;
+}
+
+// Synchronous load - try to load from disk, generate if file doesn't exist
+fn load_chunk_sync(cx: int, cz: int) -> Chunk {
+    let c = Chunk::new(cx, cz); // Initialize with generated data (will overwrite if load succeeds)
+    
+    raw {
+        char filename[256];
+        sprintf(filename, "%s/chunk_%d_%d.dat", world_dir, cx, cz);
+        
+        FILE *f = fopen(filename, "rb");
+        if(f) {
+            ChunkData data;
+            size_t read = fread(&data, sizeof(ChunkData), 1, f);
+            fclose(f);
+            
+            if(read == 1) {
+                // Successfully loaded from disk - overwrite generated data
+                memcpy(c.blocks, data.blocks, sizeof(c.blocks));
+                memcpy(c.light, data.light, sizeof(c.light));
+                c.plant_count = data.plant_count;
+                memcpy(c.plants, data.plants, sizeof(c.plants));
+            }
+        }
+    }
+    
+    return c;
 }

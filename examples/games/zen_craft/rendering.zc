@@ -107,6 +107,17 @@ fn init_textures() {
         // (2,1) Leaves
         ImageDraw(&atlas, img_leaves, (Rectangle){0,0,w,h}, (Rectangle){w*2,h,w,h}, WHITE);
         
+        // (3,1) Torch (Procedural) - Fill entire tile
+        // Background: dark brown/black for the stick
+        ImageDrawRectangle(&atlas, w*3, h, w, h, (Color){40, 30, 20, 255}); // Dark brown background
+        
+        // Main stick body (fills most of the texture)
+        ImageDrawRectangle(&atlas, w*3 + 2, h + 4, w-4, h-8, (Color){101, 67, 33, 255}); // Brown stick
+        
+        // Flame at top (upper 1/3 of texture)
+        ImageDrawRectangle(&atlas, w*3 + 3, h + 2, w-6, 6, ORANGE); // Orange flame
+        ImageDrawRectangle(&atlas, w*3 + 4, h + 1, w-8, 3, YELLOW); // Yellow core
+        
         tex_atlas = LoadTextureFromImage(atlas);
         SetTextureFilter(tex_atlas, TEXTURE_FILTER_POINT);
         

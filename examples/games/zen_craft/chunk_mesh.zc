@@ -30,12 +30,22 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
 
                     
                     // Check each face for solid blocks
-                    if (get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_AIR) face_count++; // +X
-                    if (get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_AIR) face_count++; // -X
-                    if (get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_AIR) face_count++; // +Y
-                    if (get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_AIR) face_count++; // -Y
-                    if (get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_AIR) face_count++; // +Z
-                    if (get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_AIR) face_count++; // -Z
+                    if (btype >= 10 && btype <= 14) {
+                        // Torches: Always count 6 faces (safe estimate)
+                        face_count = face_count + 6;
+                        continue;
+                    }
+
+                    // Check neighbors. Draw face if neighbor is AIR OR TORCH (Transparent)
+                    // Helper macro or inline
+                    #define IS_TRANSPARENT(b) ((b) == BLOCK_AIR || ((b) >= 10 && (b) <= 14) || (b) == BLOCK_TALLGRASS)
+                    
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) face_count++; // +X
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) face_count++; // -X
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) face_count++; // +Y
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) face_count++; // -Y
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) face_count++; // +Z
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) face_count++; // -Z
                 }
             }
         }
@@ -69,9 +79,9 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
             normals[v_idx * 3 + 2] = (nz); \
             texcoords[v_idx * 2 + 0] = (u); \
             texcoords[v_idx * 2 + 1] = (v); \
-            colors[v_idx * 4 + 0] = (light_val); \
-            colors[v_idx * 4 + 1] = (light_val); \
-            colors[v_idx * 4 + 2] = (light_val); \
+            colors[v_idx * 4 + 0] = (((light_val >> 4) & 0xF) * 17); /* Block Light (R) */ \
+            colors[v_idx * 4 + 1] = ((light_val & 0xF) * 17);        /* Sky Light (G) */ \
+            colors[v_idx * 4 + 2] = 0; \
             colors[v_idx * 4 + 3] = 255; \
             v_idx++;
         
@@ -117,11 +127,118 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     
                     // Simple macro for curve
                     #define CALC_LIGHT(l) ((unsigned char)((l) * (l)))
+                    
+                    // --- TORCH HANDLING ---
+                    // Torches are special. They are not cubes.
+                    // Variants: 10=Up, 11=N, 12=S, 13=E, 14=W
+                    if (btype >= 10 && btype <= 14) {
+                         // Torch Atlas pos is (3,1)
+                         // 4 cols x 2 rows. 
+                         // u=3*0.25=0.75, v=1*0.5=0.5
+                         float tu_min = 0.75;
+                         float tv_min = 0.5;
+                         float tu_max = 1.0;
+                         float tv_max = 1.0;
+                         
+                         int t_light = 255; // Maximum brightness for emissive look
+                         
+                         // Stick geometry: Thin torch like Minecraft
+                         // 2 pixels wide, 1/2 block tall
+                         float tw_x = 0.125;   // Width in X (2 pixels)
+                         float tw_z = 0.125;   // Depth in Z (2 pixels) 
+                         float th = 0.5;       // Height (8 pixels)
+                         
+                         // Base position - center the torch
+                         float bx = px + 0.5 - tw_x/2.0; 
+                         float by = py;
+                         float bz = pz + 0.5 - tw_z/2.0;
+                         
+                         // Apply offsets and angles for wall torches
+                         // Wall torches are angled 45 degrees away from wall
+                         float angle_offset = 0.3; // How far torch leans out
+                         
+                         if (btype == 11) { // North wall (Z+)
+                             bz += 0.45; // Move closer to wall
+                             by += 0.1;  // Slight lift
+                             // Angle: top goes toward -Z
+                         }
+                         else if (btype == 12) { // South wall (Z-)
+                             bz -= 0.45;
+                             by += 0.1;
+                         }
+                         else if (btype == 13) { // East wall (X+)
+                             bx += 0.45;
+                             by += 0.1;
+                         }
+                         else if (btype == 14) { // West wall (X-)
+                             bx -= 0.45;
+                             by += 0.1;
+                         }
+                         
+                         // Draw Box (Stick) - CCW winding order for correct face visibility
+                         // For wall torches, angle the top vertices
+                         
+                         // Calculate top offset for angling (only for wall torches)
+                         float top_offset_x = 0.0;
+                         float top_offset_z = 0.0;
+                         
+                         if (btype == 11) { top_offset_z = -angle_offset; } // North: lean away (toward -Z)
+                         else if (btype == 12) { top_offset_z = angle_offset; } // South: lean away (toward +Z)
+                         else if (btype == 13) { top_offset_x = -angle_offset; } // East: lean away (toward -X)
+                         else if (btype == 14) { top_offset_x = angle_offset; } // West: lean away (toward +X)
+                         
+                         // Top vertices are at (bx+offset, by+th, bz+offset) instead of (bx, by+th, bz)
+                         float top_bx = bx + top_offset_x;
+                         float top_bz = bz + top_offset_z;
+                         
+                         // Front (+Z) - CCW when looking at -Z
+                         ADD_VERTEX(bx, by, bz+tw_z, 0,0,1, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,0,1, tu_max, tv_min, t_light);
+                         ADD_VERTEX(bx+tw_x, by, bz+tw_z, 0,0,1, tu_max, tv_max, t_light);
+                         ADD_VERTEX(bx, by, bz+tw_z, 0,0,1, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, 0,0,1, tu_min, tv_min, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,0,1, tu_max, tv_min, t_light);
+                         
+                         // Back (-Z) - CCW when looking at +Z
+                         ADD_VERTEX(bx+tw_x, by, bz, 0,0,-1, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz, 0,0,-1, tu_max, tv_min, t_light);
+                         ADD_VERTEX(bx, by, bz, 0,0,-1, tu_max, tv_max, t_light);
+                         ADD_VERTEX(bx+tw_x, by, bz, 0,0,-1, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 0,0,-1, tu_min, tv_min, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz, 0,0,-1, tu_max, tv_min, t_light);
+                         
+                         // Left (-X) - CCW when looking at +X
+                         ADD_VERTEX(bx, by, bz, -1,0,0, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, -1,0,0, tu_max, tv_min, t_light);
+                         ADD_VERTEX(bx, by, bz+tw_z, -1,0,0, tu_max, tv_max, t_light);
+                         ADD_VERTEX(bx, by, bz, -1,0,0, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz, -1,0,0, tu_min, tv_min, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, -1,0,0, tu_max, tv_min, t_light);
+                         
+                         // Right (+X) - CCW when looking at -X
+                         ADD_VERTEX(bx+tw_x, by, bz+tw_z, 1,0,0, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 1,0,0, tu_max, tv_min, t_light);
+                         ADD_VERTEX(bx+tw_x, by, bz, 1,0,0, tu_max, tv_max, t_light);
+                         ADD_VERTEX(bx+tw_x, by, bz+tw_z, 1,0,0, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 1,0,0, tu_min, tv_min, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 1,0,0, tu_max, tv_min, t_light);
+                         
+                         // Top (+Y) - CCW when looking down
+                         ADD_VERTEX(top_bx, by+th, top_bz, 0,1,0, tu_min, tv_min, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,1,0, tu_max, tv_max, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 0,1,0, tu_max, tv_min, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz, 0,1,0, tu_min, tv_min, t_light);
+                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, 0,1,0, tu_min, tv_max, t_light);
+                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,1,0, tu_max, tv_max, t_light);
+
+                         continue; // Skip standard cube logic
+                    }
 
                     // +Y face (top)
-                    if (get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y + 1, b_gz) == BLOCK_TALLGRASS) {
-                        int face_light = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz);
-                        unsigned char light_val = CALC_LIGHT(face_light);
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) {
+                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 0);
+                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 1);
+                        int light_val = (l_blk << 4) | l_sky;
 
                         if (btype == BLOCK_GRASS) { SET_UV(1, 0); }      // Grass Top
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
@@ -140,9 +257,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // -Y face (bottom)
-                    if (get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y - 1, b_gz) == BLOCK_TALLGRASS) {
-                        int face_light = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz);
-                        unsigned char light_val = CALC_LIGHT(face_light);
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) {
+                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz, 0);
+                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz, 1);
+                        int light_val = (l_blk << 4) | l_sky;
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 0); }      // Dirt
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
@@ -161,9 +279,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // +X face (right)
-                    if (get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx + 1, y, b_gz) == BLOCK_TALLGRASS) {
-                        int face_light = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz);
-                        unsigned char light_val = CALC_LIGHT(face_light);
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) {
+                        int l_sky = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz, 0);
+                        int l_blk = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz, 1);
+                        int light_val = (l_blk << 4) | l_sky;
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
@@ -182,9 +301,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // -X face (left)
-                    if (get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx - 1, y, b_gz) == BLOCK_TALLGRASS) {
-                        int face_light = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz);
-                        unsigned char light_val = CALC_LIGHT(face_light);
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) {
+                        int l_sky = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz, 0);
+                        int l_blk = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz, 1);
+                        int light_val = (l_blk << 4) | l_sky;
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
@@ -203,9 +323,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // +Z face (front)
-                    if (get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y, b_gz + 1) == BLOCK_TALLGRASS) {
-                        int face_light = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1);
-                        unsigned char light_val = CALC_LIGHT(face_light);
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) {
+                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1, 0);
+                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1, 1);
+                        int light_val = (l_blk << 4) | l_sky;
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
@@ -224,9 +345,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // -Z face (back)
-                    if (get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_AIR || get_block(chunks, num_chunks, b_gx, y, b_gz - 1) == BLOCK_TALLGRASS) {
-                        int face_light = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1);
-                        unsigned char light_val = CALC_LIGHT(face_light);
+                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) {
+                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1, 0);
+                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1, 1);
+                        int light_val = (l_blk << 4) | l_sky;
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
@@ -319,9 +441,9 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
             normals[v_idx * 3 + 2] = (nz); \
             texcoords[v_idx * 2 + 0] = (u); \
             texcoords[v_idx * 2 + 1] = (v); \
-            colors[v_idx * 4 + 0] = (light_val); \
-            colors[v_idx * 4 + 1] = (light_val); \
-            colors[v_idx * 4 + 2] = (light_val); \
+            colors[v_idx * 4 + 0] = (((light_val >> 4) & 0xF) * 17); /* Block Light (R) */ \
+            colors[v_idx * 4 + 1] = ((light_val & 0xF) * 17);        /* Sky Light (G) */ \
+            colors[v_idx * 4 + 2] = 0; \
             colors[v_idx * 4 + 3] = 255; \
             v_idx++;
 
@@ -359,12 +481,16 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
             int lx = (int)cx;
             int ly = (int)cy;
             int lz = (int)cz;
-            int light = 15;
-            // Bounds check
-            if (lx>=0 && lx<16 && ly>=0 && ly<32 && lz>=0 && lz<16) light = c->light[lx][ly][lz];
+            int light_val = 0x0F; // Default to Skylight 15, Blocklight 0
             
-            unsigned char light_val = (unsigned char)(light * 16);
-            if (light_val > 255) light_val = 255;
+            // Bounds check
+            if (lx>=0 && lx<16 && ly>=0 && ly<32 && lz>=0 && lz<16) {
+                // Get packed light value directly
+                light_val = c->light[lx][ly][lz]; 
+            }
+            
+            // No need to multiply by 16 or cast to char. 
+            // ADD_VERTEX_P expects the packed int (0xBS) and does the decoding/scaling.
             
             // UVs: full sprite (0..1)
             float u_min = 0.0f; float v_min = 0.0f; float u_max = 1.0f; float v_max = 1.0f;
