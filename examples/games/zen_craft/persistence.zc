@@ -87,12 +87,26 @@ fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
                     data.blocks[cx][cy][cz] = BLOCK_DIRT;
                 } else if cy == h {
                     data.blocks[cx][cy][cz] = BLOCK_GRASS;
-                    l = 15;
+                    l = 240; // Sky Light 15 (0xF0), Block Light 0
                 } else {
                     data.blocks[cx][cy][cz] = BLOCK_AIR;
-                    l = 15;
+                    l = 240; // Sky Light 15 (0xF0), Block Light 0
                 }
                 data.light[cx][cy][cz] = l;
+            }
+        }
+    }
+    
+    // 2.5. Water Generation (Lakes)
+    // Fill air blocks below sea level with water
+    def SEA_LEVEL = 15;
+    for cx in 0..16 {
+        for cz in 0..16 {
+            for cy in 0..SEA_LEVEL {
+                if data.blocks[cx][cy][cz] == BLOCK_AIR {
+                    data.blocks[cx][cy][cz] = BLOCK_WATER;
+                    // Water is transparent, keep sky light at 240
+                }
             }
         }
     }
@@ -393,8 +407,11 @@ fn poll_async_results(chunks: Chunk*, num_chunks: int) {
                     chunks[idx].mesh_built = 0;
                     chunks[idx].plant_mesh_built = 0;
                     
-                    // Propagate light now that data is loaded
-                    // This is heavy, so we definitely want to limit how many times we do this per frame
+                    // CRITICAL: Recalculate lighting to fix old save format
+                    // Old chunks have Block Light = 15 from previous bug
+                    recalculate_chunk_lighting(&chunks[idx], chunks, num_chunks);
+                    
+                    // Propagate light now that data is recalculated
                     propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
                     
                     processed_count++;

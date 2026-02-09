@@ -175,6 +175,75 @@ fn get_shader_lighting() -> rl::Shader {
     return sh_lighting;
 }
 
+fn update_day_night_cycle(day_time: float) {
+    // day_time: 0.0 (Amanecer) -> 0.25 (Mediodía) -> 0.5 (Atardecer) -> 0.75 (Medianoche) -> 1.0 (Amanecer)
+    
+    // 1. Calcular Dirección del Sol (Continua)
+    let angle = (day_time * 2.0 * 3.14159) - 3.14159/2.0;
+    let sun_y = (float)sin(angle);
+    let sun_x = (float)cos(angle);
+    
+    let dir = rl::Vector3{ x: sun_x, y: sun_y, z: 0.2f };
+
+    // 2. Interpolación Suave de Color y Ambiente
+    // Definimos colores clave en puntos específicos del día
+    // Dawn (0.0):    col=(1.0, 0.6, 0.3), amb=(0.15, 0.12, 0.1)
+    // Noon (0.25):   col=(1.0, 1.0, 0.95), amb=(0.5, 0.5, 0.5)
+    // Sunset (0.5):  col=(1.0, 0.5, 0.2), amb=(0.2, 0.15, 0.1)
+    // Midnight (0.75): col=(0.1, 0.1, 0.2), amb=(0.05, 0.05, 0.08)
+    
+    let col = rl::Vector3{x: 1.0, y: 1.0, z: 1.0};
+    let amb = rl::Vector3{x: 0.3, y: 0.3, z: 0.3};
+    
+    if day_time < 0.25 {
+        // Dawn -> Noon (0.0 to 0.25)
+        let t = day_time / 0.25; // 0..1
+        col.x = 1.0;
+        col.y = 0.6 + t * 0.4;   // 0.6 -> 1.0
+        col.z = 0.3 + t * 0.65;  // 0.3 -> 0.95
+        
+        amb.x = 0.1 + t * 0.2;   // 0.1 -> 0.3
+        amb.y = 0.08 + t * 0.22; // 0.08 -> 0.3
+        amb.z = 0.06 + t * 0.24; // 0.06 -> 0.3
+    }
+    else if day_time < 0.5 {
+        // Noon -> Sunset (0.25 to 0.5)
+        let t = (day_time - 0.25) / 0.25; // 0..1
+        col.x = 1.0;
+        col.y = 1.0 - t * 0.5;   // 1.0 -> 0.5
+        col.z = 0.95 - t * 0.75; // 0.95 -> 0.2
+        
+        amb.x = 0.3 - t * 0.15;  // 0.3 -> 0.15
+        amb.y = 0.3 - t * 0.18;  // 0.3 -> 0.12
+        amb.z = 0.3 - t * 0.22;  // 0.3 -> 0.08
+    }
+    else if day_time < 0.75 {
+        // Sunset -> Midnight (0.5 to 0.75)
+        let t = (day_time - 0.5) / 0.25; // 0..1
+        col.x = 1.0 - t * 0.98;  // 1.0 -> 0.02
+        col.y = 0.5 - t * 0.47;  // 0.5 -> 0.03
+        col.z = 0.2 - t * 0.15;  // 0.2 -> 0.05 (slight blue tint)
+        
+        amb.x = 0.15 - t * 0.14; // 0.15 -> 0.01
+        amb.y = 0.12 - t * 0.11; // 0.12 -> 0.01
+        amb.z = 0.08 - t * 0.06; // 0.08 -> 0.02
+    }
+    else {
+        // Midnight -> Dawn (0.75 to 1.0)
+        let t = (day_time - 0.75) / 0.25; // 0..1
+        col.x = 0.02 + t * 0.98; // 0.02 -> 1.0
+        col.y = 0.03 + t * 0.57; // 0.03 -> 0.6
+        col.z = 0.05 + t * 0.25; // 0.05 -> 0.3
+        
+        amb.x = 0.01 + t * 0.09; // 0.01 -> 0.1
+        amb.y = 0.01 + t * 0.07; // 0.01 -> 0.08
+        amb.z = 0.02 + t * 0.04; // 0.02 -> 0.06
+    }
+
+    // Actualizar los shaders
+    update_lighting_uniforms(dir, col, amb);
+}
+
 fn draw_sky(camera: rl::Camera3D, day_time: float) {
     // Disable Depth Mask to draw sky behind everything
     rl::BeginMode3D(camera);

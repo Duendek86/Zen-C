@@ -7,35 +7,42 @@ import "blocks.zc";
 
 struct LightNode {
     x: int;
-    y: int;
+y: int;
     z: int;
 }
 
-// Simple fixed-size queue for flood fill
+// Aumentamos un poco el tamaño y usamos lógica circular
+def MAX_LIGHT_QUEUE = 32000;
+
 struct LightQueue {
-    nodes: LightNode[20000];
+    nodes: LightNode[32000]; // Debe coincidir con MAX_LIGHT_QUEUE
     head: int;
-    tail: int;
+tail: int;
 }
 
 fn queue_push(q: LightQueue*, x: int, y: int, z: int) {
-    if q.tail < 20000 {
+    // Calculamos la siguiente posición circular
+    let next_tail = (q.tail + 1) % MAX_LIGHT_QUEUE;
+    
+    // Si no alcanzamos a la cabeza (la cola no está llena realmente)
+    if next_tail != q.head {
         q.nodes[q.tail].x = x;
-        q.nodes[q.tail].y = y;
+q.nodes[q.tail].y = y;
         q.nodes[q.tail].z = z;
-        q.tail += 1;
+        q.tail = next_tail;
     }
 }
 
 fn queue_pop(q: LightQueue*) -> LightNode {
     let n: LightNode;
-    n = q.nodes[q.head];
-    q.head += 1;
+n = q.nodes[q.head];
+    // Avance circular de la cabeza
+    q.head = (q.head + 1) % MAX_LIGHT_QUEUE;
     return n;
 }
 
 fn queue_is_empty(q: LightQueue*) -> int {
-    return q.head >= q.tail;
+    return q.head == q.tail;
 }
 
 #endif // LIGHTING_ZC

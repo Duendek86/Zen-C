@@ -14,6 +14,9 @@ import "rendering.zc";
 import "player.zc";
 import "persistence.zc";
 import "title_generator.zc";
+import "zibi.zc";
+
+def MAX_ZIBIS = 5;
 
 def STATE_TITLE = 0;
 def STATE_LOADING = 1;
@@ -47,6 +50,7 @@ fn main() {
     let p: Player;
     let selected_block = BLOCK_STONE;
     let chunks: Chunk*;
+    let zibis: Zibi[MAX_ZIBIS]; // Declare here for scope visibility
     raw {
         chunks = (Chunk*)MemAlloc(sizeof(Chunk) * MAX_CHUNKS);
     }
@@ -110,7 +114,7 @@ fn main() {
              for i in 0..MAX_CHUNKS {
                 if chunks[i].x != -9999 {
                     // Title chunks don't need throttling really, there are few
-                    chunks[i].draw(&chunks[0], MAX_CHUNKS, &i, 100); 
+                    chunks[i].draw(&chunks[0], MAX_CHUNKS, &i, 100, 8.0, 25.0); 
                 }
             }
             rl::EndMode3D();
@@ -153,6 +157,20 @@ fn main() {
                         if(chunks[idx].x != cx || chunks[idx].z != cz) {
                             chunks[idx] = load_chunk_sync(cx, cz);
                             propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
+                            
+                            // Re-propagate light in adjacent neighbors to fix boundary seams
+                            int neighbor_offsets[8] = {-1, 0, 1, 0, 0, -1, 0, 1}; // 4 neighbors
+                            for(int ni = 0; ni < 4; ni++) {
+                                int ncx = cx + neighbor_offsets[ni * 2];
+                                int ncz = cz + neighbor_offsets[ni * 2 + 1];
+                                int nidx = get_chunk_index(ncx, ncz);
+                                
+                                if(chunks[nidx].x == ncx && chunks[nidx].z == ncz) {
+                                    propagate_light_in_chunk(&chunks[nidx], &chunks[0], MAX_CHUNKS);
+                                    chunks[nidx].mesh_dirty = 1;
+                                }
+                            }
+                            
                             build_chunk_mesh(&chunks[idx], &chunks[0], MAX_CHUNKS);
                             build_plant_mesh(&chunks[idx], get_tex_grass());
                         }
@@ -225,6 +243,13 @@ fn main() {
                 p.yaw = spawn_yaw;
                 p.pitch = spawn_pitch;
                 
+                // Initialize Zibis around spawn
+                for i in 0..MAX_ZIBIS {
+                    let ox = spawn_x + (float)(i * 5 - 10);
+                    let oz = spawn_z + (float)(i * 5 - 10);
+                    zibis[i] = Zibi::new(ox, spawn_y + 10.0, oz);
+                }
+                
                 current_state = STATE_GAME;
                 rl::DisableCursor();
             }
@@ -274,8 +299,30 @@ fn main() {
                          // Load synchronously (try disk first, generate if not found)
                          chunks[idx] = load_chunk_sync(cx, cz);
                          
-                         // Propagate light after loading/generation
+                         // ALWAYS recalculate lighting after load to fix old save format
+                         // This initializes proper dual-channel light values
+                         recalculate_chunk_lighting(&chunks[idx], &chunks[0], MAX_CHUNKS);
+                         
+                         // Propagate light after recalculation
                          propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
+                         
+                         // Re-propagate light in adjacent neighbors to fix boundary seams
+                         // This ensures that when this chunk loads, its neighbors receive light from it
+                         let neighbor_offsets: int[8] = [-1, 0, 1, 0, 0, -1, 0, 1]; // 4 neighbors: -X, +X, -Z, +Z
+                         for ni in 0..4 {
+                             let ncx = cx + neighbor_offsets[ni * 2];
+                             let ncz = cz + neighbor_offsets[ni * 2 + 1];
+                             let nidx = get_chunk_index(ncx, ncz);
+                             
+                             // Only re-propagate if neighbor exists and is the correct chunk
+                             if chunks[nidx].x == ncx && chunks[nidx].z == ncz {
+                                 propagate_light_in_chunk(&chunks[nidx], &chunks[0], MAX_CHUNKS);
+                                 chunks[nidx].mesh_dirty = 1;
+                             }
+                         }
+                         
+                         // Force mesh rebuild with new light data
+                         chunks[idx].mesh_dirty = 1;
                      }
                  }
             }
@@ -283,6 +330,11 @@ fn main() {
             // No longer need poll_async_results for game chunks (only title screen uses async)
             
             (&p).update(&chunks[0], MAX_CHUNKS, dt);
+            
+            // Update Zibis
+            for i in 0..MAX_ZIBIS {
+                zibis[i].update(&chunks[0], MAX_CHUNKS, dt);
+            }
     
             // Block selection input
             if rl::IsKeyPressed(rl::KEY_ONE) { selected_block = BLOCK_DIRT; }
@@ -291,6 +343,7 @@ fn main() {
             if rl::IsKeyPressed(rl::KEY_FOUR) { selected_block = BLOCK_LOG; }
             if rl::IsKeyPressed(rl::KEY_FIVE) { selected_block = BLOCK_LEAVES; }
             if rl::IsKeyPressed(rl::KEY_SIX) { selected_block = BLOCK_TORCH; }
+            if rl::IsKeyPressed(rl::KEY_SEVEN) { selected_block = BLOCK_WATER; }
     
             rl::BeginDrawing();
             
@@ -299,120 +352,61 @@ fn main() {
             day_time = day_time + (dt / day_duration);
             if day_time > 1.0 { day_time = day_time - 1.0; }
             
-            // Calculate Sun Angle (0..1 -> 0..360 -> radians)
-            // 0.0 = Noon (Top), 0.25 = Sunset, 0.5 = Midnight, 0.75 = Sunrise
-            // Actually usually: 0=Sunrise, 0.5=Sunset. Let's align:
-            // Let 0.0 = Sunrise (East), 0.25 = Noon (Top), 0.5 = Sunset (West), 0.75 = Midnight.
-            let angle = (day_time - 0.25) * 2.0 * 3.14159; // Offset so 0.25 is PI/2 (top)? No.
-            // Let's use simple sin/cos. 
-            // 0.25 is Noon. Sun at (0, 1, 0) approx.
-            // t=0.25 -> angle=0. cos(0)=1 (up? no Y is usually sin).
-            // Let's just Map 0..1 to angle 0..2PI.
-            // sun_x = cos(time * 2PI), sun_y = sin(time * 2PI).
-            // We want Noon at 0.5? Or start at dawn?
-            // Let's stick to: 0.0 = Start of Day (Sunrise). 0.5 = Sunset.
+            // Update lighting uniforms using the new system
+            update_day_night_cycle(day_time);
             
-            // Adjust so 0.0 is sunrise: time=0 -> Y=0, X>0. 
-            // 0.25 = Noon -> Y=1.
-            let sun_angle = (day_time * 2.0 * 3.14159) - 3.14159/2.0; // Starts at -90deg (Sunrise?)
+            // Update Wind Time
+            let lighting_shader: rl::Shader = get_shader_lighting();
+            let wind_time: float = (float)rl::GetTime();
             
-            let sun_dir = rl::Vector3{
-                x: (float)cos(sun_angle),
-                y: (float)sin(sun_angle),
-                z: 0.2 // Slight tilt
-            };
-            
-            // Light Color Interpolation - Smooth continuous transitions
-            let light_col = rl::Vector3{x: 1.0, y: 1.0, z: 1.0};
-            let amb_col = rl::Vector3{x: 0.2, y: 0.2, z: 0.2};
-            
-            // Use smooth interpolation instead of discrete blocks
-            // 0.0 = Dawn, 0.25 = Noon, 0.5 = Dusk, 0.75 = Midnight, 1.0 = Dawn
-            
-            if day_time < 0.25 {
-                // Dawn -> Day (0.0 to 0.25)
-                let t = day_time / 0.25; // 0..1
-                // Interpolate from orange dawn to bright day
-                light_col.x = 1.0;
-                light_col.y = 0.6 + t * 0.4; // 0.6 -> 1.0
-                light_col.z = 0.4 + t * 0.55; // 0.4 -> 0.95
-                
-                amb_col.x = 0.2 + t * 0.3; // 0.2 -> 0.5
-                amb_col.y = 0.2 + t * 0.35; // 0.2 -> 0.55
-                amb_col.z = 0.3 + t * 0.3; // 0.3 -> 0.6
-            }
-            else if day_time < 0.5 {
-                // Day -> Sunset (0.25 to 0.5)
-                let t = (day_time - 0.25) / 0.25; // 0..1
-                // Interpolate from bright day to orange sunset
-                light_col.x = 1.0;
-                light_col.y = 1.0 - t * 0.5; // 1.0 -> 0.5
-                light_col.z = 0.95 - t * 0.75; // 0.95 -> 0.2
-                
-                amb_col.x = 0.5 - t * 0.3; // 0.5 -> 0.2
-                amb_col.y = 0.55 - t * 0.35; // 0.55 -> 0.2
-                amb_col.z = 0.6 - t * 0.35; // 0.6 -> 0.25
-            }
-            else if day_time < 0.75 {
-                // Sunset -> Night (0.5 to 0.75)
-                let t = (day_time - 0.5) / 0.25; // 0..1
-                // Interpolate from orange sunset to dark night
-                light_col.x = 1.0 - t * 0.98; // 1.0 -> 0.02
-                light_col.y = 0.5 - t * 0.48; // 0.5 -> 0.02
-                light_col.z = 0.2 - t * 0.15; // 0.2 -> 0.05 (Moonlight)
-                
-                amb_col.x = 0.2 - t * 0.19; // 0.2 -> 0.01
-                amb_col.y = 0.2 - t * 0.19; // 0.2 -> 0.01
-                amb_col.z = 0.25 - t * 0.23; // 0.25 -> 0.02
-                
-                // Flip to moon
-                sun_dir.x = -sun_dir.x;
-                sun_dir.y = -sun_dir.y;
-            }
-            else {
-                // Night -> Dawn (0.75 to 1.0)
-                let t = (day_time - 0.75) / 0.25; // 0..1
-                // Interpolate from dark night to orange dawn
-                light_col.x = 0.02 + t * 0.98; // 0.02 -> 1.0
-                light_col.y = 0.02 + t * 0.58; // 0.02 -> 0.6
-                light_col.z = 0.05 + t * 0.35; // 0.05 -> 0.4
-                
-                amb_col.x = 0.01 + t * 0.19; // 0.01 -> 0.2
-                amb_col.y = 0.01 + t * 0.19; // 0.01 -> 0.2
-                amb_col.z = 0.02 + t * 0.28; // 0.02 -> 0.3
-                
-                // Moon direction
-                sun_dir.x = -sun_dir.x;
-                sun_dir.y = -sun_dir.y;
+            // Pass to C
+            raw {
+                /* C access to raylib functions */
+                int loc = GetShaderLocation(lighting_shader, "time");
+                if (loc != -1) {
+                    SetShaderValue(lighting_shader, loc, &wind_time, SHADER_UNIFORM_FLOAT);
+                }
             }
             
-            update_lighting_uniforms(sun_dir, light_col, amb_col);
-
             rl::BeginDrawing();
-            rl::ClearBackground(rl::Color{r: 135, g: 206, b: 235, a: 255}); // We need dynamic sky color too!
-            // But for now fixed sky blue is OK, or we can clear with interpolated color.
-            // Let's just clear black and draw skybox/plane? Or just change ClearColor.
-            // Simple Sky Color:
-            let sky_r = (int)(amb_col.x * 255.0);
-            let sky_g = (int)(amb_col.y * 255.0);
-            let sky_b = (int)(amb_col.z * 255.0);
-            // Day sky is brighter than ambient usually
-             if day_time > 0.0 && day_time < 0.5 {
-                 sky_r = 135; sky_g = 206; sky_b = 235;
-                 if day_time > 0.4 { // darken at sunset
-                     let t = (day_time - 0.4) * 10.0; 
-                     sky_r = (int)(135.0 * (1.0-t));
-                     sky_g = (int)(206.0 * (1.0-t));
-                     sky_b = (int)(235.0 * (1.0-t));
+
+            // Simple Sky Color Logic for Background Clear
+            // Default Night Sky
+            let sky_r = 10;
+            let sky_g = 10;
+            let sky_b = 20;
+
+            if day_time > 0.0 && day_time < 0.5 {
+                 // Day
+                 sky_r = 135; sky_g = 206; sky_b = 235; // SkyBlue
+                 
+                 // Sunset fade
+                 if day_time > 0.4 { 
+                     let t = (day_time - 0.4) * 10.0; // 0..1 over 0.1 time units
+                     sky_r = (int)((float)sky_r * (1.0 - t) + 10.0 * t);
+                     sky_g = (int)((float)sky_g * (1.0 - t) + 10.0 * t);
+                     sky_b = (int)((float)sky_b * (1.0 - t) + 20.0 * t);
                  }
-             }
+                 // Sunrise fade
+                 if day_time < 0.1 {
+                     let t = day_time * 10.0; // 0..1
+                     sky_r = (int)(10.0 * (1.0 - t) + (float)sky_r * t);
+                     sky_g = (int)(10.0 * (1.0 - t) + (float)sky_g * t);
+                     sky_b = (int)(20.0 * (1.0 - t) + (float)sky_b * t);
+                 }
+            }
              
             rl::ClearBackground(rl::Color{r: sky_r, g: sky_g, b: sky_b, a: 255});
     
             draw_sky(p.camera, day_time);
     
             rl::BeginMode3D(p.camera);
-            raw { rlDisableBackfaceCulling(); }
+            raw { 
+                rlDisableBackfaceCulling();
+                rlEnableDepthTest();
+                // Enable alpha blending for water transparency
+                rlSetBlendMode(BLEND_ALPHA);
+            }
     
             let builds_in_frame = 0;
             let max_builds = 3; // Increased from 1 to reduce chunk pop-in 
@@ -420,8 +414,13 @@ fn main() {
             for i in 0..MAX_CHUNKS {
                 let c: Chunk* = &chunks[i];
                 if c.x != -9999 {
-                    c.draw(&chunks[0], MAX_CHUNKS, &builds_in_frame, max_builds);
+                    c.draw(&chunks[0], MAX_CHUNKS, &builds_in_frame, max_builds, p.x, p.z);
                 }
+            }
+            
+            // Draw Zibis
+            for i in 0..MAX_ZIBIS {
+                zibis[i].draw(&chunks[0], MAX_CHUNKS, day_time);
             }
     
             // Block interaction

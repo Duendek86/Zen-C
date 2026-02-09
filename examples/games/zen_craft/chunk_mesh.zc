@@ -38,7 +38,6 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
 
                     // Check neighbors. Draw face if neighbor is AIR OR TORCH (Transparent)
                     // Helper macro or inline
-                    #define IS_TRANSPARENT(b) ((b) == BLOCK_AIR || ((b) >= 10 && (b) <= 14) || (b) == BLOCK_TALLGRASS)
                     
                     if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) face_count++; // +X
                     if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) face_count++; // -X
@@ -69,7 +68,8 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         
         int v_idx = 0;
         
-        // Helper macro to add vertex
+        // Helper macro to add vertex uses current_flag from scope
+        // Colors: R = Block Light, G = Sky Light, B = Flag (0=None, 100=Wind, 255=Water)
         #define ADD_VERTEX(px, py, pz, nx, ny, nz, u, v, light_val) \
             vertices[v_idx * 3 + 0] = (float)(px); \
             vertices[v_idx * 3 + 1] = (float)(py); \
@@ -79,11 +79,12 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
             normals[v_idx * 3 + 2] = (nz); \
             texcoords[v_idx * 2 + 0] = (u); \
             texcoords[v_idx * 2 + 1] = (v); \
-            colors[v_idx * 4 + 0] = (((light_val >> 4) & 0xF) * 17); /* Block Light (R) */ \
-            colors[v_idx * 4 + 1] = ((light_val & 0xF) * 17);        /* Sky Light (G) */ \
-            colors[v_idx * 4 + 2] = 0; \
+            colors[v_idx * 4 + 0] = ((light_val & 0xF) * 17);        /* Block Light (R) */ \
+            colors[v_idx * 4 + 1] = (((light_val >> 4) & 0xF) * 17); /* Sky Light (G) */ \
+            colors[v_idx * 4 + 2] = current_flag;                    /* Flag (B) */ \
             colors[v_idx * 4 + 3] = 255; \
             v_idx++;
+        
         
         // Build mesh
         for (int x = 0; x < 16; x++) {
@@ -91,6 +92,17 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                 for (int z = 0; z < 16; z++) {
                     int btype = c->blocks[x][y][z];
                     if (btype == BLOCK_AIR) continue;
+                    
+                    int current_flag = 0;
+                    if (btype == BLOCK_WATER) current_flag = 255;
+                    else if (btype == BLOCK_LEAVES) current_flag = 100;
+                    
+                    // Helper: Should we render a face?
+                    // For water blocks, don't render faces against other water blocks
+                    // This makes water appear as one solid volume instead of a grid
+                    #define SHOULD_RENDER_FACE(neighbor_block) \
+                        (IS_TRANSPARENT(neighbor_block) && \
+                         !(btype == BLOCK_WATER && (neighbor_block) == BLOCK_WATER))
                     
                     int b_gx = gx_base + x;
                     int b_gz = gz_base + z;
@@ -233,9 +245,31 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
 
                          continue; // Skip standard cube logic
                     }
+                    
+                    // WATER SPECIAL CASE: Only render top surface
+                    if (btype == BLOCK_WATER) {
+                        // Only draw +Y face (top) if exposed
+                        int neighbor_above = get_block(chunks, num_chunks, b_gx, y + 1, b_gz);
+                        if (neighbor_above != BLOCK_WATER && IS_TRANSPARENT(neighbor_above)) {
+                            int l_sky = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 0);
+                            int l_blk = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 1);
+                            int light_val = (l_blk << 4) | l_sky;
+                            
+                            SET_UV(0, 0); // Water uses dirt texture (will be overridden by shader)
+                            
+                            ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
+                            ADD_VERTEX(px+1, py+1, pz,   0,1,0, u_max, v_min, light_val);
+                            ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
+                            
+                            ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
+                            ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
+                            ADD_VERTEX(px, py+1, pz+1,   0,1,0, u_min, v_max, light_val);
+                        }
+                        continue; // Skip all other faces for water
+                    }
 
                     // +Y face (top)
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) {
+                    if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) {
                         int l_sky = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 0);
                         int l_blk = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 1);
                         int light_val = (l_blk << 4) | l_sky;
@@ -257,7 +291,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // -Y face (bottom)
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) {
+                    if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) {
                         int l_sky = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz, 0);
                         int l_blk = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz, 1);
                         int light_val = (l_blk << 4) | l_sky;
@@ -279,7 +313,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // +X face (right)
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) {
+                    if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) {
                         int l_sky = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz, 0);
                         int l_blk = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz, 1);
                         int light_val = (l_blk << 4) | l_sky;
@@ -301,7 +335,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // -X face (left)
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) {
+                    if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) {
                         int l_sky = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz, 0);
                         int l_blk = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz, 1);
                         int light_val = (l_blk << 4) | l_sky;
@@ -323,7 +357,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // +Z face (front)
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) {
+                    if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) {
                         int l_sky = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1, 0);
                         int l_blk = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1, 1);
                         int light_val = (l_blk << 4) | l_sky;
@@ -345,7 +379,7 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     }
                     
                     // -Z face (back)
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) {
+                    if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) {
                         int l_sky = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1, 0);
                         int l_blk = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1, 1);
                         int light_val = (l_blk << 4) | l_sky;
@@ -432,7 +466,7 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
         
         int v_idx = 0;
         
-        #define ADD_VERTEX_P(px, py, pz, nx, ny, nz, u, v, light_val) \
+        #define ADD_VERTEX_P(px, py, pz, nx, ny, nz, u, v, light_val, flag) \
             vertices[v_idx * 3 + 0] = (float)(px); \
             vertices[v_idx * 3 + 1] = (float)(py); \
             vertices[v_idx * 3 + 2] = (float)(pz); \
@@ -443,7 +477,7 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
             texcoords[v_idx * 2 + 1] = (v); \
             colors[v_idx * 4 + 0] = (((light_val >> 4) & 0xF) * 17); /* Block Light (R) */ \
             colors[v_idx * 4 + 1] = ((light_val & 0xF) * 17);        /* Sky Light (G) */ \
-            colors[v_idx * 4 + 2] = 0; \
+            colors[v_idx * 4 + 2] = flag; \
             colors[v_idx * 4 + 3] = 255; \
             v_idx++;
 
@@ -496,22 +530,25 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
             float u_min = 0.0f; float v_min = 0.0f; float u_max = 1.0f; float v_max = 1.0f;
             
             // Plane 1: (x0, z0) to (x1, z1)
-            ADD_VERTEX_P(x0, y0, z0,  0,0,1, u_min, v_max, light_val);
-            ADD_VERTEX_P(x1, y0, z1,  0,0,1, u_max, v_max, light_val);
-            ADD_VERTEX_P(x1, y1, z1,  0,0,1, u_max, v_min, light_val);
+            // Bottom vertices (y0) -> flag 0
+            // Top vertices (y1) -> flag 100
             
-            ADD_VERTEX_P(x0, y0, z0,  0,0,1, u_min, v_max, light_val);
-            ADD_VERTEX_P(x1, y1, z1,  0,0,1, u_max, v_min, light_val);
-            ADD_VERTEX_P(x0, y1, z0,  0,0,1, u_min, v_min, light_val);
+            ADD_VERTEX_P(x0, y0, z0,  0,0,1, u_min, v_max, light_val, 0);
+            ADD_VERTEX_P(x1, y0, z1,  0,0,1, u_max, v_max, light_val, 0);
+            ADD_VERTEX_P(x1, y1, z1,  0,0,1, u_max, v_min, light_val, 100);
+            
+            ADD_VERTEX_P(x0, y0, z0,  0,0,1, u_min, v_max, light_val, 0);
+            ADD_VERTEX_P(x1, y1, z1,  0,0,1, u_max, v_min, light_val, 100);
+            ADD_VERTEX_P(x0, y1, z0,  0,0,1, u_min, v_min, light_val, 100);
             
             // Plane 2: (x1, z0) to (x0, z1)
-            ADD_VERTEX_P(x1, y0, z0,  0,0,1, u_min, v_max, light_val);
-            ADD_VERTEX_P(x0, y0, z1,  0,0,1, u_max, v_max, light_val);
-            ADD_VERTEX_P(x0, y1, z1,  0,0,1, u_max, v_min, light_val);
+            ADD_VERTEX_P(x1, y0, z0,  0,0,1, u_min, v_max, light_val, 0);
+            ADD_VERTEX_P(x0, y0, z1,  0,0,1, u_max, v_max, light_val, 0);
+            ADD_VERTEX_P(x0, y1, z1,  0,0,1, u_max, v_min, light_val, 100);
             
-            ADD_VERTEX_P(x1, y0, z0,  0,0,1, u_min, v_max, light_val);
-            ADD_VERTEX_P(x0, y1, z1,  0,0,1, u_max, v_min, light_val);
-            ADD_VERTEX_P(x1, y1, z0,  0,0,1, u_min, v_min, light_val);
+            ADD_VERTEX_P(x1, y0, z0,  0,0,1, u_min, v_max, light_val, 0);
+            ADD_VERTEX_P(x0, y1, z1,  0,0,1, u_max, v_min, light_val, 100);
+            ADD_VERTEX_P(x1, y1, z0,  0,0,1, u_min, v_min, light_val, 100);
         }
         
         #undef ADD_VERTEX_P

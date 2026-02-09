@@ -6,6 +6,9 @@ import "math.h";
 import "blocks.zc";
 import "lighting.zc";
 import "rendering.zc";
+import "grass_deco.zc";
+
+#define IS_TRANSPARENT(b) ((b) == BLOCK_AIR || ((b) >= 10 && (b) <= 14) || (b) == BLOCK_TALLGRASS || (b) == BLOCK_LEAVES || (b) == BLOCK_WATER)
 
 // Externs
 extern fn rand() -> int;
@@ -39,6 +42,11 @@ struct Chunk {
     plant_mesh: rl::Mesh;
     plant_model: rl::Model;
     plant_mesh_built: int;
+    
+    // Grass Decorations (Small planes on grass surfaces)
+    grass_deco_mesh: rl::Mesh;
+    grass_deco_model: rl::Model;
+    grass_deco_built: int;
     
     mesh_dirty: int; // 1 = needs rebuild (both)
     mesh_built: int; // 1 = block mesh has been created
@@ -97,29 +105,57 @@ fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int)
     }
 }
 
+fn get_light_levels(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
+    if y < 0 || y >= 32 { return 240; } // 15 << 4 (Full Sky, No Block)
+
+    let cx = (int)floor((float)x / 16.0);
+    let cz = (int)floor((float)z / 16.0);
+    
+    let lx = ((x % 16) + 16) % 16;
+    let lz = ((z % 16) + 16) % 16;
+
+    let idx = get_chunk_index(cx, cz);
+    
+    if chunks[idx].x == cx && chunks[idx].z == cz {
+        return chunks[idx].light[lx][y][lz];
+    }
+
+    return 240; // Default to full sky light if chunk missing
+}
+
 fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, channel: int) -> int {
     if y < 0 || y >= 32 { 
-        if channel == 0 { return 15; } // Sky is bright
-        return 0; // Block light is dark in sky
+        if channel == 0 { return 15; } 
+        return 0; 
     }
     
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
     
     let idx = get_chunk_index(cx, cz);
-
+    
+    // Verificamos si el chunk en el índice es realmente el que buscamos
     if chunks[idx].x == cx && chunks[idx].z == cz {
         let lx = ((x % 16) + 16) % 16;
         let lz = ((z % 16) + 16) % 16;
         let val = chunks[idx].light[lx][y][lz];
-        
         if channel == 0 {
-            return val & 0xF; // Sky Light (Lower nibble)
+            // Sky Light (Upper 4 bits)
+            return (val >> 4) & 0xF;
         } else {
-            return (val >> 4) & 0xF; // Block Light (Upper nibble)
+            // Block Light (Lower 4 bits)
+            return val & 0xF;
         }
     }
-    return 0; // Unloaded chunks have no light info
+    
+    // --- CAMBIO AQUÍ ---
+    // Si el chunk vecino no está cargado:
+    // Si es luz del cielo (channel 0) y estamos altos, asumimos que hay sol.
+    if channel == 0 && y > 16 { 
+        return 15; 
+    }
+    
+    return 0; 
 }
 
 fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val: int, channel: int) {
@@ -137,48 +173,39 @@ fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val
         // Read-Modify-Write
         let current = chunks[idx].light[lx][y][lz];
         if channel == 0 {
-            // Set Sky Light (Lower)
-            chunks[idx].light[lx][y][lz] = (current & 0xF0) | (val & 0xF);
-        } else {
-            // Set Block Light (Upper)
+            // Set Sky Light (Upper 4 bits)
             chunks[idx].light[lx][y][lz] = (current & 0x0F) | ((val & 0xF) << 4);
+        } else {
+            // Set Block Light (Lower 4 bits)
+            chunks[idx].light[lx][y][lz] = (current & 0xF0) | (val & 0xF);
         }
     }
 }
 
 fn update_sunlight_column(chunks: Chunk*, num_chunks: int, x: int, z: int) {
     let casting_shadow = 0;
-    
-    for i in 0..32 {
+for i in 0..32 {
         let y = 31 - i;
-        let blk = get_block(chunks, num_chunks, x, y, z);
+let blk = get_block(chunks, num_chunks, x, y, z);
         
         if casting_shadow == 0 {
-             // Helper macro
-             #ifdef IS_TRANSPARENT
-             #undef IS_TRANSPARENT
-             #endif
-             #define IS_TRANSPARENT(b) ((b) == BLOCK_AIR || ((b) >= 10 && (b) <= 14) || (b) == BLOCK_TALLGRASS)
-             
              if (!IS_TRANSPARENT(blk)) {
-                 // Found surface. This block is SOLILD. It stops sunlight.
-                 // Set Sky Light to 0 (Channel 0)
+                 // Encontró superficie sólida.
+                 // Pone la luz a 0 y empieza a emitir sombra
                  set_light_global(chunks, num_chunks, x, y, z, 0, 0);
-                 casting_shadow = 1;
+casting_shadow = 1;
              } else {
-                 // Sky Light 15 (Channel 0)
+                 // Sigue siendo cielo (o bloque transparente expuesto al sol)
                  set_light_global(chunks, num_chunks, x, y, z, 15, 0);
-             }
+}
         } else {
-             // Underground - start with minimal light
-             // Sky Light 0 (Channel 0)
+             // Bajo tierra o bajo sombra
              set_light_global(chunks, num_chunks, x, y, z, 0, 0);
-        }
+}
         
-        // Always reset Block Light (Channel 1) to 0 during full recalc
-        // Torches will be re-added in step 1.5
+        // Reset block light
         set_light_global(chunks, num_chunks, x, y, z, 0, 1);
-    }
+}
 }
 
 // Internal propagation for a specific channel
@@ -199,9 +226,11 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
                 // Read specific channel
                 let val = c.light[x][y][z];
                 if channel == 0 {
-                    current_light = val & 0xF;
-                } else {
+                    // Sky Light (Upper 4 bits)
                     current_light = (val >> 4) & 0xF;
+                } else {
+                    // Block Light (Lower 4 bits)
+                    current_light = val & 0xF;
                 }
                 
                 // If this block emits light (sunlight column OR torch), it's a source
@@ -233,9 +262,11 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
                         // We need to preserve the OTHER channel.
                         let old_val = c.light[x][y][z];
                         if channel == 0 {
-                            c.light[x][y][z] = (old_val & 0xF0) | ((max_n - 1) & 0xF);
-                        } else {
+                            // Sky Light -> Upper 4 bits (preserve lower 4 bits)
                             c.light[x][y][z] = (old_val & 0x0F) | (((max_n - 1) & 0xF) << 4);
+                        } else {
+                            // Block Light -> Lower 4 bits (preserve upper 4 bits)
+                            c.light[x][y][z] = (old_val & 0xF0) | ((max_n - 1) & 0xF);
                         }
                         
                         queue_push(&q, gx, y, gz);
@@ -343,8 +374,8 @@ fn recalculate_chunk_lighting(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     // We need to keep Sky Light (Channel 0) intact!
                     // Read current
                     let current = c.light[lx][ly][lz];
-                    // Set Block Light to 8 (Upper nibble)
-                    c.light[lx][ly][lz] = (current & 0x0F) | (8 << 4);
+                    // Set Block Light to 8 (Lower 4 bits) - Sky is Upper 4 bits
+                    c.light[lx][ly][lz] = (current & 0xF0) | 8;
                 }
                 lz = lz + 1;
             }
@@ -458,6 +489,9 @@ impl Chunk {
         }
 
         // Fill Blocks and Light
+        // SEA_LEVEL defined for consistent use
+        def SEA_LEVEL_GEN = 15;
+        
         for cx in 0..16 {
             for cz in 0..16 {
                 let h = heights[cx][cz];
@@ -470,7 +504,12 @@ impl Chunk {
                     } else if cy < h {
                         c.blocks[cx][cy][cz] = BLOCK_DIRT;
                     } else if cy == h {
-                        c.blocks[cx][cy][cz] = BLOCK_GRASS;
+                        // Underwater surfaces are dirt, above water surfaces are grass
+                        if h < SEA_LEVEL_GEN {
+                            c.blocks[cx][cy][cz] = BLOCK_DIRT;
+                        } else {
+                            c.blocks[cx][cy][cz] = BLOCK_GRASS;
+                        }
                         l = 15; // Surface is lit
                     } else {
                         c.blocks[cx][cy][cz] = BLOCK_AIR;
@@ -482,6 +521,22 @@ impl Chunk {
             }
         }
         
+        // 2.5 Water Generation (Lakes)
+        // Fill air blocks below sea level with water
+        raw {
+            #define SEA_LEVEL 15
+            for (int wx = 0; wx < 16; wx++) {
+                for (int wz = 0; wz < 16; wz++) {
+                    for (int wy = 0; wy < SEA_LEVEL; wy++) {
+                        if (c.blocks[wx][wy][wz] == BLOCK_AIR) {
+                            c.blocks[wx][wy][wz] = BLOCK_WATER;
+                        }
+                    }
+                }
+            }
+            #undef SEA_LEVEL
+        }
+        
         // Add tall grass and Trees randomly
         c.plant_count = 0;
         
@@ -489,9 +544,13 @@ impl Chunk {
             // Use chunk coordinates as seed for consistent randomness
             srand(x * 73856093 ^ z * 19349663);
             
+            #define SEA_LEVEL_VEG 15
             for (int cx = 0; cx < 16; cx++) {
                 for (int cz = 0; cz < 16; cz++) {
                     int h = heights[cx][cz];
+                    
+                    // Skip vegetation for underwater surfaces
+                    if (h < SEA_LEVEL_VEG) continue;
                     
                     // Check if surface is grass
                     if (c.blocks[cx][h][cz] == BLOCK_GRASS && h < 31) {
@@ -605,7 +664,8 @@ impl Chunk {
         return c;
     }
 
-    fn draw(self, chunks: Chunk*, num_chunks: int, builds_this_frame: int*, max_builds: int) {
+    // Updated draw signature to include player position for LOD
+    fn draw(self, chunks: Chunk*, num_chunks: int, builds_this_frame: int*, max_builds: int, px: float, pz: float) {
         // Rebuild mesh if dirty
         if self.mesh_dirty != 0 {
             // Rate limit mesh building
@@ -622,12 +682,6 @@ impl Chunk {
         // Draw entire chunk with single draw call!
         let gx_base = self.x * 16;
         let gz_base = self.z * 16;
-        
-        // Skip if no mesh built (empty chunk or waiting for build)
-        // If mesh is dirty but we skipped build, mesh_built is 0, so we don't draw (invisible for 1 frame)
-        // Or we draw OLD mesh?
-        // build_chunk_mesh clears and rebuilds. If we skip, we just don't have new model.
-        // If it's a new chunk (mesh_built=0), it stays invisible. That's fine (pop-in prevention).
         
         if self.mesh_built != 0 {
             let offset = rl::Vector3{
@@ -647,6 +701,33 @@ impl Chunk {
             };
             
             rl::DrawModel(self.plant_model, offset_plants, 1.0, rl::WHITE);
+        }
+        
+        // Draw grass decorations (LOD: strict 16 block distance)
+        let dx = (float)gx_base + 8.0 - px; // Check from center of chunk
+        let dz = (float)gz_base + 8.0 - pz;
+        let dist_sq = dx * dx + dz * dz;
+        
+        // 16 blocks radius = 256 squared. 
+        // Let's rely on chunk distance: if distance is small enough.
+        // User asked for "16 blocks around player". 
+        // 16 blocks is 1 chunk. So basically STRICTLY current chunk? 
+        // Or within 16 units? 
+        // Let's use 24.0 radius (1.5 chunks) to be safe and avoid popping at edge
+        // 24.0 * 24.0 = 576.0
+        if dist_sq < 576.0 {
+             if self.grass_deco_built == 0 && self.mesh_built != 0 {
+                build_grass_decorations(self, chunks, num_chunks);
+            }
+            
+            if self.grass_deco_built != 0 {
+                let offset_grass = rl::Vector3{
+                    x: (float)gx_base,
+                    y: 0.0,
+                    z: (float)gz_base
+                };
+                rl::DrawModel(self.grass_deco_model, offset_grass, 1.0, rl::WHITE);
+            }
         }
     }
 }

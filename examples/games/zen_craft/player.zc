@@ -34,8 +34,8 @@ fn check_collision(chunks: Chunk*, num_chunks: int, x: float, y: float, z: float
         for iy in min_y..max_y+1 {
             for iz in min_z..max_z+1 {
                 let block = get_block(chunks, num_chunks, ix, iy, iz);
-                // Tall grass and torches are non-solid
-                if block != BLOCK_AIR && block != BLOCK_TALLGRASS && !(block >= 10 && block <= 14) {
+                // Tall grass, torches, and water are non-solid
+                if block != BLOCK_AIR && block != BLOCK_TALLGRASS && !(block >= 10 && block <= 14) && block != BLOCK_WATER {
                     return 1;
                 }
             }
@@ -100,19 +100,33 @@ impl Player {
             let move_x = fx * dx + rx * dz;
             let move_z = fz * dx + rz * dz;
 
+            // Check if player is in water (check at player center)
+            let player_block = get_block(chunks, num_chunks, (int)floor(self.x), (int)floor(self.y + 0.9), (int)floor(self.z));
+            let in_water = (player_block == BLOCK_WATER);
+            
+            // Movement speed modifier
+            let speed_mult = 1.0;
+            if in_water {
+                speed_mult = 0.5; // Slower in water
+            }
+
             let mlen = sqrt(move_x*move_x + move_z*move_z);
             if mlen > 0.001 {
                 move_x /= mlen;
                 move_z /= mlen;
-                self.vx = move_x * MOVE_SPEED;
-                self.vz = move_z * MOVE_SPEED;
+                self.vx = move_x * MOVE_SPEED * speed_mult;
+                self.vz = move_z * MOVE_SPEED * speed_mult;
             } else {
                 self.vx = 0.0;
                 self.vz = 0.0;
             }
 
-            // Gravity and jump
-            self.vy -= (float)GRAVITY * dt;
+            // Gravity and jump (reduced gravity in water for buoyancy)
+            let gravity_mult = 1.0;
+            if in_water {
+                gravity_mult = 0.3; // Buoyancy effect
+            }
+            self.vy -= (float)GRAVITY * dt * gravity_mult;
 
             if rl::IsKeyPressed(rl::KEY_SPACE) {
                  // Only jump if on ground (check slightly below)

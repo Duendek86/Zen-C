@@ -1,0 +1,307 @@
+//> Zibi character implementation
+import "player.zc"; // Access to check_collision and chunk utilities
+import "raylib.h" as rl;
+import "math.h";
+
+struct Zibi {
+    x: float;
+    y: float;
+    z: float;
+    vx: float;
+    vy: float;
+    vz: float;
+    yaw: float;
+    
+    // Behavior state
+    state: int;       // 0=Idle, 1=Walk
+    state_timer: float;
+    target_yaw: float;
+    
+    // Animation
+    anim_time: float;
+}
+
+// Zibi Constants
+def ZIBI_WIDTH = 0.4; // 0.8 * 0.5 = 0.4
+def ZIBI_HEIGHT = 0.9; // 1.8 * 0.5 = 0.9
+def ZIBI_SPEED = 2.5;
+
+impl Zibi {
+    static fn new(x: float, y: float, z: float) -> Zibi {
+        let inst: Zibi;
+        inst.x = x;
+        inst.y = y;
+        inst.z = z;
+        inst.vx = 0.0;
+        inst.vy = 0.0;
+        inst.vz = 0.0;
+        inst.yaw = 0.0;
+        inst.state = 0;
+        inst.state_timer = 2.0;
+        inst.target_yaw = 0.0;
+        inst.anim_time = 0.0;
+        return inst;
+    }
+
+    fn update(self, chunks: Chunk*, num_chunks: int, dt: float) {
+        // --- 1. AI / Behavior ---
+        self.state_timer -= dt;
+        self.anim_time += dt;
+        
+        if self.state_timer <= 0.0 {
+            // Pick new state
+            let r = 0;
+            raw { r = GetRandomValue(0, 100); }
+            
+            if r < 40 {
+                // Determine new state: IDLE
+                self.state = 0;
+                raw { self->state_timer = (float)GetRandomValue(10, 30) / 10.0; } // 1.0 - 3.0s
+            } else {
+                // Determine new state: WALK
+                self.state = 1;
+                raw { 
+                    self->state_timer = (float)GetRandomValue(20, 50) / 10.0; // 2.0 - 5.0s
+                    // Pick random direction
+                    self->target_yaw = (float)GetRandomValue(0, 360) * 0.0174533; 
+                }
+            }
+        }
+        
+        // Smooth rotation
+        // Simple lerp for rotation could be added here, currently instant snap for target
+        self.yaw = self.target_yaw;
+
+        // --- 2. Physics & Movement ---
+        
+        if self.state == 1 {
+            // Walking
+            self.vx = (float)cos(self.yaw) * ZIBI_SPEED;
+            self.vz = (float)sin(self.yaw) * ZIBI_SPEED;
+            
+            // Wall avoidance / Jump check
+            let front_x = self.x + self.vx * 0.4; // Look slightly further ahead
+            let front_z = self.z + self.vz * 0.4;
+            
+            // Check collision at feet level (wall)
+            if check_collision(chunks, num_chunks, front_x, self.y, front_z, ZIBI_WIDTH, 0.5) {
+                 // Wall detected
+                 // Check if the block above is empty (can we jump?)
+                 if !check_collision(chunks, num_chunks, front_x, self.y + 1.1, front_z, ZIBI_WIDTH, 0.5) {
+                      // Only jump if on ground
+                      if check_collision(chunks, num_chunks, self.x, self.y - 0.1, self.z, ZIBI_WIDTH, 0.5) {
+                          self.vy = 9.0; // Increased Jump force to clear 1 block
+                      }
+                 } else {
+                      // Cannot jump, wall is too high -> Stop/Turn
+                      self.state = 0; // Stop
+                      self.state_timer = 1.0;
+                 }
+            }
+            
+        } else {
+            // Idle
+            self.vx = 0.0;
+            self.vz = 0.0;
+        }
+
+        // Gravity
+        self.vy -= 18.0 * dt; 
+
+        // Integration (Collision)
+        // X axis
+        self.x += self.vx * dt;
+        if check_collision(chunks, num_chunks, self.x, self.y, self.z, ZIBI_WIDTH, ZIBI_HEIGHT) {
+            self.x -= self.vx * dt;
+        }
+
+        // Z axis
+        self.z += self.vz * dt;
+        if check_collision(chunks, num_chunks, self.x, self.y, self.z, ZIBI_WIDTH, ZIBI_HEIGHT) {
+            self.z -= self.vz * dt;
+        }
+
+        // Y axis
+        self.y += self.vy * dt;
+        if check_collision(chunks, num_chunks, self.x, self.y, self.z, ZIBI_WIDTH, ZIBI_HEIGHT) {
+            self.y -= self.vy * dt;
+            self.vy = 0.0;
+        }
+        
+        if self.y < -50.0 { self.y = 100.0; } // Respawn
+    }
+
+    fn draw(self, chunks: Chunk*, num_chunks: int, day_time: float) {
+        // --- ZIBI RENDERING (SHREK STYLE) ---
+        
+        // --- Lighting Calc ---
+        // Get light at body center
+        let lx = (int)floor(self.x);
+        let ly = (int)floor(self.y + 0.8);
+        let lz = (int)floor(self.z);
+        
+        let packed_light = get_light_levels(chunks, num_chunks, lx, ly, lz);
+        let block_light = (float)(packed_light & 0xF);
+        let sky_light = (float)((packed_light >> 4) & 0xF);
+        
+        // Calculate Day Factor (0.0 night to 1.0 day)
+        // day_time 0.0=Dawn(0.5), 0.25=Noon(1.0), 0.5=Sunset(0.5), 0.75=Midnight(0.0)
+        // Approximation:
+        let sun_str = 0.0;
+        if day_time < 0.5 { // Dawn -> Sunset
+             // 0.0->0.25->0.5 corresponds to sin curve 0->1->0?
+             // sin(day_time * 2 * PI) ? 
+             // At 0.0 (Dawn) -> sin(0) = 0. We want some light.
+             // Look at update_day_night_cycle logic:
+             // Dawn: sun_y=0, light=dark? Actually dawn has some light.
+             // Let's us a simple curve:
+             let angle = (day_time * 6.28318) - 1.57079; // -PI/2 at 0.0
+             let sin_val = (float)sin(angle); // -1 at 0.0?
+             // 0.0=Dawn. Sun is rising. sin should be 0 going to 1.
+             // angle at 0.0 is -PI/2. sin is -1.
+             // Real cycle: 0=Dawn(Rise), 0.25=Noon(High), 0.5=Sunset(Set), 0.75=Midnight(Low)
+             // angle = (day_time * 2PI) - PI/2.
+             // t=0 -> -PI/2 -> sin=-1.
+             // t=0.25 -> 0 -> sin=0.
+             // This doesn't match "Sun Height".
+             // Let's just use `sky_light` directly but scale by a global "Ambient+Sun" factor.
+             // Since we don't have global uniforms accessible here easily, let's approximate.
+             
+             // Simple approximation:
+             // sky_intensity = max(0.2, sin((day_time - 0.0) * 2 * PI)) ?
+             // Better: 
+             let d = day_time;
+             if d > 0.85 { d -= 1.0; } // Wrap for dawn calc
+             // Peak at 0.25, trough at 0.75.
+             // Cos curve shifted?
+             // 0.0: 0.2, 0.25: 1.0, 0.5: 0.2, 0.75: 0.05
+             
+             // Simplest: Map day_time to 0..1 intensity
+             if day_time < 0.25 { sun_str = 0.2 + (day_time/0.25)*0.8; }
+             else if day_time < 0.5 { sun_str = 1.0 - ((day_time-0.25)/0.25)*0.8; }
+             else if day_time < 0.75 { sun_str = 0.2 - ((day_time-0.5)/0.25)*0.15; }
+             else { sun_str = 0.05 + ((day_time-0.75)/0.25)*0.15; }
+        } else {
+             if day_time < 0.75 { sun_str = 0.2 - ((day_time-0.5)/0.25)*0.18; }
+             else { sun_str = 0.02 + ((day_time-0.75)/0.25)*0.18; }
+        }
+        
+        // Combine lights
+        // Current Sky Light * Sun Strength
+        let effective_sky = (sky_light / 15.0) * sun_str;
+        
+        // Block light (Torch) - always bright
+        let effective_block = (block_light / 15.0);
+        // Torch curve from shader: pow(block, 1.2)
+        effective_block = (float)pow(effective_block, 1.2);
+        
+        // Final intensity
+        let intensity = effective_sky + effective_block;
+        
+        if intensity > 1.0 { intensity = 1.0; }
+        if intensity < 0.1 { intensity = 0.1; } // Minimum ambient
+        
+        // Apply intensity to colors
+        
+        // Colores basados en la imagen
+        let c_skin = rl::Color{ r: (int)(104.0*intensity), g: (int)(194.0*intensity), b: (int)(58.0*intensity), a: 255 }; 
+        let c_tunic = rl::Color{ r: (int)(120.0*intensity), g: (int)(86.0*intensity), b: (int)(50.0*intensity), a: 255 };
+        let c_pants = rl::Color{ r: (int)(56.0*intensity), g: (int)(42.0*intensity), b: (int)(29.0*intensity), a: 255 };
+        let c_white = rl::Color{ r: (int)(255.0*intensity), g: (int)(255.0*intensity), b: (int)(255.0*intensity), a: 255 };
+        let c_black = rl::BLACK; // Black stays black
+
+        // Variables de animación
+        let limb_swing = 0.0;
+        if self.state == 1 { 
+            // Oscilación rápida para pasos cortos
+            limb_swing = (float)sin(self.anim_time * 12.0); 
+        }
+
+        raw {
+            rlPushMatrix();
+            // Posición global del personaje
+            rlTranslatef(self->x, self->y, self->z);
+            // Rotación global (YAW)
+            // Model faces +X (Forward). Yaw=0 -> +X. Identity rotation is correct.
+            rlRotatef(self->yaw * 57.2958f, 0.0f, -1.0f, 0.0f); // -Y axis?
+            // Note: In Zen-C math usually positive angle = CCW?
+            // If v = (cos(ang), sin(ang)), then ang=90 (0,1) is +Z.
+            // Rot Y positive usually goes X -> -Z.
+            // Let's rely on standard rotation: Rotate around Y. 
+            // If yaw grows CCW, we likely need -Y axis or negative angle for standard 3D.
+            // Trial: Leave as -1.0f for Y axis similar to before, but remove 90 offset.
+            
+            // REDUCE SIZE (50%)
+            rlScalef(0.5f, 0.5f, 0.5f);
+
+            // --- 1. PIERNAS (Con Animación) ---
+            // Mover a los lados (Eje Z)
+            
+            // Pierna Izquierda (Lado +Z)
+            rlPushMatrix();
+            rlTranslatef(0.0f, 0.6f, 0.15f); // Pivote Cadera
+            rlRotatef(limb_swing * 40.0f, 0.0f, 0.0f, 1.0f); // Rotar en eje Z local (X global invertido?)
+            // Wait, if facing +X, Swing should be around Z axis.
+            // Legs swing forward/back (in X). Rotation axis is Z.
+            DrawCube((Vector3){0.0f, -0.3f, 0.0f}, 0.25f, 0.6f, 0.2f, c_pants); 
+            DrawCube((Vector3){0.05f, -0.65f, 0.0f}, 0.35f, 0.1f, 0.22f, c_skin); // Pie apunta a +X
+            rlPopMatrix();
+
+            // Pierna Derecha (Lado -Z)
+            rlPushMatrix();
+            rlTranslatef(0.0f, 0.6f, -0.15f); 
+            rlRotatef(-limb_swing * 40.0f, 0.0f, 0.0f, 1.0f); 
+            DrawCube((Vector3){0.0f, -0.3f, 0.0f}, 0.25f, 0.6f, 0.2f, c_pants);
+            DrawCube((Vector3){0.05f, -0.65f, 0.0f}, 0.35f, 0.1f, 0.22f, c_skin);
+            rlPopMatrix();
+
+            // --- 2. CUERPO (Túnica) ---
+            // Ancho en Z (hombros), Profundo en X (pecho/espalda)
+            DrawCube((Vector3){0.0f, 0.95f, 0.0f}, 0.35f, 0.7f, 0.55f, c_tunic); 
+            
+            // --- 3. BRAZOS (Con Animación) ---
+            // Lados Z
+            
+            // Brazo Izquierdo (+Z)
+            rlPushMatrix();
+            rlTranslatef(0.0f, 1.2f, 0.35f); // Pivote Hombro
+            rlRotatef(-limb_swing * 40.0f, 0.0f, 0.0f, 1.0f); 
+            DrawCube((Vector3){0.0f, -0.25f, 0.0f}, 0.18f, 0.6f, 0.18f, c_skin);
+            DrawCube((Vector3){0.0f, 0.0f, 0.0f}, 0.2f, 0.25f, 0.2f, c_tunic);
+            rlPopMatrix();
+
+            // Brazo Derecho (-Z)
+            rlPushMatrix();
+            rlTranslatef(0.0f, 1.2f, -0.35f); 
+            rlRotatef(limb_swing * 40.0f, 0.0f, 0.0f, 1.0f);
+            DrawCube((Vector3){0.0f, -0.25f, 0.0f}, 0.18f, 0.6f, 0.18f, c_skin);
+            DrawCube((Vector3){0.0f, 0.0f, 0.0f}, 0.2f, 0.25f, 0.2f, c_tunic);
+            rlPopMatrix();
+
+            // --- 4. CABEZA ---
+            float head_y = 1.55f;
+            DrawCube((Vector3){0.0f, head_y, 0.0f}, 0.45f, 0.55f, 0.5f, c_skin);
+            
+            // Orejas (Trompetas) - Lados Z
+            // Izquierda (+Z)
+            DrawCube((Vector3){0.0f, head_y + 0.1f, 0.3f}, 0.08f, 0.08f, 0.2f, c_skin); 
+            DrawCube((Vector3){0.0f, head_y + 0.1f, 0.4f}, 0.15f, 0.15f, 0.05f, c_skin); 
+            // Derecha (-Z)
+            DrawCube((Vector3){0.0f, head_y + 0.1f, -0.3f}, 0.08f, 0.08f, 0.2f, c_skin); 
+            DrawCube((Vector3){0.0f, head_y + 0.1f, -0.4f}, 0.15f, 0.15f, 0.05f, c_skin); 
+
+            // Cara (Ojos) - Frente +X
+            // Ojo Izq (+Z side of face)
+            DrawCube((Vector3){0.23f, head_y + 0.05f, 0.12f}, 0.05f, 0.12f, 0.12f, c_white);
+            DrawCube((Vector3){0.26f, head_y + 0.05f, 0.12f}, 0.02f, 0.04f, 0.04f, c_black); 
+            // Ojo Der (-Z side of face)
+            DrawCube((Vector3){0.23f, head_y + 0.05f, -0.12f}, 0.05f, 0.12f, 0.12f, c_white);
+            DrawCube((Vector3){0.26f, head_y + 0.05f, -0.12f}, 0.02f, 0.04f, 0.04f, c_black); 
+            
+            // Boca
+            DrawCube((Vector3){0.23f, head_y - 0.15f, 0.0f}, 0.02f, 0.03f, 0.2f, c_pants);
+
+            rlPopMatrix();
+        }
+    }
+}
