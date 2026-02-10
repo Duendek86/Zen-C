@@ -79,23 +79,27 @@ impl Zibi {
             self.vx = (float)cos(self.yaw) * ZIBI_SPEED;
             self.vz = (float)sin(self.yaw) * ZIBI_SPEED;
             
-            // Wall avoidance / Jump check
-            let front_x = self.x + self.vx * 0.4; // Look slightly further ahead
-            let front_z = self.z + self.vz * 0.4;
+            // Wall avoidance / Jump check / Water detection
+            let front_x = self.x + self.vx * 0.8; // Look further ahead
+            let front_z = self.z + self.vz * 0.8;
             
-            // Check collision at feet level (wall)
-            if check_collision(chunks, num_chunks, front_x, self.y, front_z, ZIBI_WIDTH, 0.5) {
-                 // Wall detected
-                 // Check if the block above is empty (can we jump?)
-                 if !check_collision(chunks, num_chunks, front_x, self.y + 1.1, front_z, ZIBI_WIDTH, 0.5) {
+            let block_at_front = get_block(chunks, num_chunks, (int)front_x, (int)self.y, (int)front_z);
+            let block_below_front = get_block(chunks, num_chunks, (int)front_x, (int)self.y - 1, (int)front_z);
+
+            if check_collision(chunks, num_chunks, front_x, self.y, front_z, ZIBI_WIDTH, 0.5) || block_at_front == BLOCK_WATER || block_below_front == BLOCK_WATER {
+                 // Wall or Water detected
+                 // Only try to jump if it was a WALL, not water
+                 if block_at_front != BLOCK_WATER && block_below_front != BLOCK_WATER && !check_collision(chunks, num_chunks, front_x, self.y + 1.1, front_z, ZIBI_WIDTH, 0.5) {
                       // Only jump if on ground
                       if check_collision(chunks, num_chunks, self.x, self.y - 0.1, self.z, ZIBI_WIDTH, 0.5) {
-                          self.vy = 9.0; // Increased Jump force to clear 1 block
+                          self.vy = 9.0; 
                       }
                  } else {
-                      // Cannot jump, wall is too high -> Stop/Turn
+                      // Cannot jump (wall too high) OR detected water
                       self.state = 0; // Stop
                       self.state_timer = 1.0;
+                      // Change yaw randomly to turn away
+                      raw { self->yaw += ((float)rand() / 32767.0f) * 6.28f; }
                  }
             }
             
@@ -128,7 +132,7 @@ impl Zibi {
             self.vy = 0.0;
         }
         
-        if self.y < -50.0 { self.y = 100.0; } // Respawn
+        if self.y < -50.0 { self.y = (float)CHUNK_HEIGHT + 10.0; } // Respawn high
     }
 
     fn draw(self, chunks: Chunk*, num_chunks: int, day_time: float) {

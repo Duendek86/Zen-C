@@ -7,6 +7,10 @@ import "chunk.zc";
 import "rendering.zc";
 
 // No externs needed
+// #define IS_TRANSPARENT(b) ((b) == BLOCK_AIR || ((b) >= 10 && (b) <= 14) || (b) == BLOCK_TALLGRASS || (b) == BLOCK_LEAVES || (b) == BLOCK_WATER)
+
+// Use a local macro to be 100% sure BLOCK_WATER (8) is included and no import issues occur
+#define IS_TRANSPARENT_MESH(b) ((b) == 0 || ((b) >= 10 && (b) <= 14) || (b) == 4 || (b) == 6 || (b) == 8)
 
 fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
     // Note: We don't unload the old mesh - we just overwrite it
@@ -18,9 +22,10 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
     raw {
         // Count visible faces first to allocate exact size
         int face_count = 0;
+        int water_face_count = 0;
         
         for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 32; y++) {
+            for (int y = 0; y < CHUNK_HEIGHT; y++) {
                 for (int z = 0; z < 16; z++) {
                     int btype = c->blocks[x][y][z];
                     if (btype == BLOCK_AIR) continue;
@@ -35,60 +40,153 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                         face_count = face_count + 6;
                         continue;
                     }
-
-                    // Check neighbors. Draw face if neighbor is AIR OR TORCH (Transparent)
-                    // Helper macro or inline
                     
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) face_count++; // +X
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) face_count++; // -X
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) face_count++; // +Y
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) face_count++; // -Y
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) face_count++; // +Z
-                    if (IS_TRANSPARENT(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) face_count++; // -Z
+                    // Count water faces separately
+                    if (btype == BLOCK_WATER) {
+                        int neighbor_above = get_block(chunks, num_chunks, b_gx, y + 1, b_gz);
+                        if (neighbor_above != BLOCK_WATER && IS_TRANSPARENT_MESH(neighbor_above)) {
+                            water_face_count++;
+                        }
+                        continue;
+                    }
+
+                    // Check neighbors. Must match SHOULD_RENDER_FACE logic!
+                    // Solid blocks render against transparent including water
+                    
+                    if (IS_TRANSPARENT_MESH(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) face_count++; // +X
+                    if (IS_TRANSPARENT_MESH(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) face_count++; // -X
+                    if (IS_TRANSPARENT_MESH(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) face_count++; // +Y
+                    if (IS_TRANSPARENT_MESH(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) face_count++; // -Y
+                    if (IS_TRANSPARENT_MESH(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) face_count++; // +Z
+                    if (IS_TRANSPARENT_MESH(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) face_count++; // -Z
                 }
             }
         }
         
         
-        if (face_count == 0) {
-            // Empty chunk, create dummy mesh
+        if (face_count == 0 && water_face_count == 0) {
+            // Empty chunk, create dummy mesh - mark as built to avoid loading loop
             c->chunk_mesh = GenMeshCube(0.0f, 0.0f, 0.0f);
             c->chunk_model = LoadModelFromMesh(c->chunk_mesh);
-            c->mesh_built = 1;
+            c->mesh_built = 1; // Must be 1 so loading screen considers it "ready"
+            
+            // Dummy water mesh too
+            c->water_mesh = GenMeshCube(0.0f, 0.0f, 0.0f);
+            c->water_model = LoadModelFromMesh(c->water_mesh);
+            c->water_mesh_built = 0;
+            
             c->mesh_dirty = 0;
             return;
         }
         
         // Allocate vertex data (6 vertices per face = 2 triangles)
+        // Use 6 as safe divisor for allocation, although we use 4 verts + indices.
         int vertex_count = face_count * 6;
-        float* vertices = (float*)malloc(vertex_count * 3 * sizeof(float));
-        float* normals = (float*)malloc(vertex_count * 3 * sizeof(float));
-        float* texcoords = (float*)malloc(vertex_count * 2 * sizeof(float));
-        unsigned char* colors = (unsigned char*)malloc(vertex_count * 4 * sizeof(unsigned char));
+        int w_vertex_count = water_face_count * 6;
         
+        // Opaque Mesh Arrays
+        float* vertices = NULL;
+        float* normals = NULL;
+        float* texcoords = NULL;
+        unsigned char* colors = NULL;
+        // unsigned short* indices = NULL; // Removed for unindexed (large mesh) support
+        
+        if (vertex_count > 0) {
+            vertices = (float*)malloc(vertex_count * 3 * sizeof(float));
+            normals = (float*)malloc(vertex_count * 3 * sizeof(float));
+            texcoords = (float*)malloc(vertex_count * 2 * sizeof(float));
+            colors = (unsigned char*)malloc(vertex_count * 4 * sizeof(unsigned char));
+            // indices = (unsigned short*)malloc(vertex_count * sizeof(unsigned short));
+        }
+        
+        // Water Mesh Arrays
+        float* w_vertices = NULL;
+        float* w_normals = NULL;
+        float* w_texcoords = NULL;
+        unsigned char* w_colors = NULL;
+        // unsigned short* w_indices = NULL;
+        
+        if (w_vertex_count > 0) {
+            w_vertices = (float*)malloc(w_vertex_count * 3 * sizeof(float));
+            w_normals = (float*)malloc(w_vertex_count * 3 * sizeof(float));
+            w_texcoords = (float*)malloc(w_vertex_count * 2 * sizeof(float));
+            w_colors = (unsigned char*)malloc(w_vertex_count * 4 * sizeof(unsigned char));
+            // w_indices = (unsigned short*)malloc(w_vertex_count * sizeof(unsigned short));
+        }
+
         int v_idx = 0;
+        // int i_idx = 0;
+        int w_v_idx = 0;
+        // int w_i_idx = 0;
         
-        // Helper macro to add vertex uses current_flag from scope
-        // Colors: R = Block Light, G = Sky Light, B = Flag (0=None, 100=Wind, 255=Water)
-        #define ADD_VERTEX(px, py, pz, nx, ny, nz, u, v, light_val) \
-            vertices[v_idx * 3 + 0] = (float)(px); \
-            vertices[v_idx * 3 + 1] = (float)(py); \
-            vertices[v_idx * 3 + 2] = (float)(pz); \
-            normals[v_idx * 3 + 0] = (nx); \
-            normals[v_idx * 3 + 1] = (ny); \
-            normals[v_idx * 3 + 2] = (nz); \
-            texcoords[v_idx * 2 + 0] = (u); \
-            texcoords[v_idx * 2 + 1] = (v); \
-            colors[v_idx * 4 + 0] = ((light_val & 0xF) * 17);        /* Block Light (R) */ \
-            colors[v_idx * 4 + 1] = (((light_val >> 4) & 0xF) * 17); /* Sky Light (G) */ \
-            colors[v_idx * 4 + 2] = current_flag;                    /* Flag (B) */ \
-            colors[v_idx * 4 + 3] = 255; \
-            v_idx++;
+        // Quad Buffer (to accumulate 4 verts then emit 6)
+        float q_px[4]; float q_py[4]; float q_pz[4];
+        float q_nx[4]; float q_ny[4]; float q_nz[4];
+        float q_u[4]; float q_v[4];
+        int q_light[4];
+        int q_flag[4];
+        int q_idx = 0;
+
+        // Helper macro to buffer vertex
+        #define ADD_VERTEX_GENERIC(px, py, pz, nx, ny, nz, u, v, light_val, IS_WATER) \
+            q_px[q_idx] = (float)(px); \
+            q_py[q_idx] = (float)(py); \
+            q_pz[q_idx] = (float)(pz); \
+            q_nx[q_idx] = nx; \
+            q_ny[q_idx] = ny; \
+            q_nz[q_idx] = nz; \
+            q_u[q_idx] = u; \
+            q_v[q_idx] = v; \
+            q_light[q_idx] = light_val; \
+            if (IS_WATER) q_flag[q_idx] = 255; else q_flag[q_idx] = current_flag; \
+            q_idx++;
+
+        // Helper macro to emit one final vertex from buffer
+        #define EMIT_VERTEX(idx, IS_WATER) \
+            if (IS_WATER) { \
+                w_vertices[w_v_idx * 3 + 0] = q_px[idx]; \
+                w_vertices[w_v_idx * 3 + 1] = q_py[idx]; \
+                w_vertices[w_v_idx * 3 + 2] = q_pz[idx]; \
+                w_normals[w_v_idx * 3 + 0] = q_nx[idx]; \
+                w_normals[w_v_idx * 3 + 1] = q_ny[idx]; \
+                w_normals[w_v_idx * 3 + 2] = q_nz[idx]; \
+                w_texcoords[w_v_idx * 2 + 0] = q_u[idx]; \
+                w_texcoords[w_v_idx * 2 + 1] = q_v[idx]; \
+                w_colors[w_v_idx * 4 + 0] = ((q_light[idx] & 0xF) * 17); \
+                w_colors[w_v_idx * 4 + 1] = (((q_light[idx] >> 4) & 0xF) * 17); \
+                w_colors[w_v_idx * 4 + 2] = 255; \
+                w_colors[w_v_idx * 4 + 3] = 255; \
+                w_v_idx++; \
+            } else { \
+                vertices[v_idx * 3 + 0] = q_px[idx]; \
+                vertices[v_idx * 3 + 1] = q_py[idx]; \
+                vertices[v_idx * 3 + 2] = q_pz[idx]; \
+                normals[v_idx * 3 + 0] = q_nx[idx]; \
+                normals[v_idx * 3 + 1] = q_ny[idx]; \
+                normals[v_idx * 3 + 2] = q_nz[idx]; \
+                texcoords[v_idx * 2 + 0] = q_u[idx]; \
+                texcoords[v_idx * 2 + 1] = q_v[idx]; \
+                colors[v_idx * 4 + 0] = ((q_light[idx] & 0xF) * 17); \
+                colors[v_idx * 4 + 1] = (((q_light[idx] >> 4) & 0xF) * 17); \
+                colors[v_idx * 4 + 2] = q_flag[idx]; \
+                colors[v_idx * 4 + 3] = 255; \
+                v_idx++; \
+            }
+
+        #define ADD_QUAD_INDICES(IS_WATER) \
+            /* Emit 6 vertices: 0, 1, 2, 0, 2, 3 */ \
+            EMIT_VERTEX(0, IS_WATER); \
+            EMIT_VERTEX(1, IS_WATER); \
+            EMIT_VERTEX(2, IS_WATER); \
+            EMIT_VERTEX(0, IS_WATER); \
+            EMIT_VERTEX(2, IS_WATER); \
+            EMIT_VERTEX(3, IS_WATER); \
+            q_idx = 0;
         
         
         // Build mesh
         for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 32; y++) {
+            for (int y = 0; y < CHUNK_HEIGHT; y++) {
                 for (int z = 0; z < 16; z++) {
                     int btype = c->blocks[x][y][z];
                     if (btype == BLOCK_AIR) continue;
@@ -98,11 +196,13 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     else if (btype == BLOCK_LEAVES) current_flag = 100;
                     
                     // Helper: Should we render a face?
-                    // For water blocks, don't render faces against other water blocks
-                    // This makes water appear as one solid volume instead of a grid
+                    // For water blocks, ONLY render against AIR (or transparent non-water).
+                    // Never render water against solid blocks (we see the solid face).
+                    // Never render water against water.
                     #define SHOULD_RENDER_FACE(neighbor_block) \
-                        (IS_TRANSPARENT(neighbor_block) && \
-                         !(btype == BLOCK_WATER && (neighbor_block) == BLOCK_WATER))
+                        ((btype == BLOCK_WATER) ? \
+                            ((neighbor_block) == BLOCK_AIR || ((neighbor_block) >= 10 && (neighbor_block) <= 14) || (neighbor_block) == BLOCK_TALLGRASS || (neighbor_block) == BLOCK_LEAVES) : \
+                            (IS_TRANSPARENT_MESH(neighbor_block)))
                     
                     int b_gx = gx_base + x;
                     int b_gz = gz_base + z;
@@ -111,34 +211,24 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     float py = (float)y;
                     float pz = (float)z;
                     
-                    // Texture atlas UVs (4x2 grid: 0.25 wide, 0.5 high per texture)
+                    // Texture atlas UVs (4x3 grid: 0.25 wide, 0.333 high per texture)
                     // Layout:
-                    // Row 0 (V=0.0-0.5): [Dirt][Grass_Top][Log_Side][Log_Top]
-                    // Row 1 (V=0.5-1.0): [Grass_Side][Stone][Leaves][Empty]
+                    // Row 0 (V=0.00-0.33): [Dirt][Grass_Top][Log_Side][Log_Top]
+                    // Row 1 (V=0.33-0.66): [Grass_Side][Stone][Leaves][Empty]
+                    // Row 2 (V=0.66-1.00): [Sand][Empty][Empty][Empty]
                     
                     float u_min, v_min, u_max, v_max;
                     
                     // Helpers for Atlas coords (col, row)
-                    // Col: 0..3, Row: 0..1
+                    // Col: 0..3, Row: 0..2
                     #define SET_UV(c, r) \
                         u_min = (float)(c) * 0.25f; \
-                        v_min = (float)(r) * 0.5f; \
+                        v_min = (float)(r) * 0.333333f; \
                         u_max = u_min + 0.25f; \
-                        v_max = v_min + 0.5f;
-                    
-                    // Lighting Curve Calculation
-                    // We want faster falloff. Linear * 16 is too bright.
-                    // Use quadratic curve: (light / 15.0)^2 * 255
-                    // Integer approximation: light * light
-                    // 15*15 = 225. 255 max. 
-                    // Let's use simple lookup or x*x approximation.
-                    // light=15 -> 225 (close to 255)
-                    // light=10 -> 100 (vs 160 linear)
-                    // light=5 -> 25 (vs 80 linear)
-                    // light=1 -> 1 (vs 16 linear) -> Pitch black practically.
-                    
-                    // Simple macro for curve
-                    #define CALC_LIGHT(l) ((unsigned char)((l) * (l)))
+                        v_max = v_min + 0.333333f;
+
+                    // Simple macro for light retrieval
+                    #define CALC_LIGHT(gx, gy, gz, v) (v) = get_light_levels(chunks, num_chunks, (gx), (gy), (gz))
                     
                     // --- TORCH HANDLING ---
                     // Torches are special. They are not cubes.
@@ -204,200 +294,177 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                          float top_bz = bz + top_offset_z;
                          
                          // Front (+Z) - CCW when looking at -Z
-                         ADD_VERTEX(bx, by, bz+tw_z, 0,0,1, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,0,1, tu_max, tv_min, t_light);
-                         ADD_VERTEX(bx+tw_x, by, bz+tw_z, 0,0,1, tu_max, tv_max, t_light);
-                         ADD_VERTEX(bx, by, bz+tw_z, 0,0,1, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, 0,0,1, tu_min, tv_min, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,0,1, tu_max, tv_min, t_light);
+                         ADD_VERTEX_GENERIC(bx, by, bz+tw_z, 0,0,1, tu_min, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(bx+tw_x, by, bz+tw_z, 0,0,1, tu_max, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx+tw_x, by+th, top_bz+tw_z, 0,0,1, tu_max, tv_min, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx, by+th, top_bz+tw_z, 0,0,1, tu_min, tv_min, t_light, 0);
+                         ADD_QUAD_INDICES(0);
                          
                          // Back (-Z) - CCW when looking at +Z
-                         ADD_VERTEX(bx+tw_x, by, bz, 0,0,-1, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz, 0,0,-1, tu_max, tv_min, t_light);
-                         ADD_VERTEX(bx, by, bz, 0,0,-1, tu_max, tv_max, t_light);
-                         ADD_VERTEX(bx+tw_x, by, bz, 0,0,-1, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 0,0,-1, tu_min, tv_min, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz, 0,0,-1, tu_max, tv_min, t_light);
+                         ADD_VERTEX_GENERIC(bx+tw_x, by, bz, 0,0,-1, tu_min, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(bx, by, bz, 0,0,-1, tu_max, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx, by+th, top_bz, 0,0,-1, tu_max, tv_min, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx+tw_x, by+th, top_bz, 0,0,-1, tu_min, tv_min, t_light, 0);
+                         ADD_QUAD_INDICES(0);
                          
                          // Left (-X) - CCW when looking at +X
-                         ADD_VERTEX(bx, by, bz, -1,0,0, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, -1,0,0, tu_max, tv_min, t_light);
-                         ADD_VERTEX(bx, by, bz+tw_z, -1,0,0, tu_max, tv_max, t_light);
-                         ADD_VERTEX(bx, by, bz, -1,0,0, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz, -1,0,0, tu_min, tv_min, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, -1,0,0, tu_max, tv_min, t_light);
+                         ADD_VERTEX_GENERIC(bx, by, bz, -1,0,0, tu_min, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(bx, by, bz+tw_z, -1,0,0, tu_max, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx, by+th, top_bz+tw_z, -1,0,0, tu_max, tv_min, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx, by+th, top_bz, -1,0,0, tu_min, tv_min, t_light, 0);
+                         ADD_QUAD_INDICES(0);
                          
                          // Right (+X) - CCW when looking at -X
-                         ADD_VERTEX(bx+tw_x, by, bz+tw_z, 1,0,0, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 1,0,0, tu_max, tv_min, t_light);
-                         ADD_VERTEX(bx+tw_x, by, bz, 1,0,0, tu_max, tv_max, t_light);
-                         ADD_VERTEX(bx+tw_x, by, bz+tw_z, 1,0,0, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 1,0,0, tu_min, tv_min, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 1,0,0, tu_max, tv_min, t_light);
+                         ADD_VERTEX_GENERIC(bx+tw_x, by, bz+tw_z, 1,0,0, tu_min, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(bx+tw_x, by, bz, 1,0,0, tu_max, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx+tw_x, by+th, top_bz, 1,0,0, tu_max, tv_min, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx+tw_x, by+th, top_bz+tw_z, 1,0,0, tu_min, tv_min, t_light, 0);
+                         ADD_QUAD_INDICES(0);
                          
                          // Top (+Y) - CCW when looking down
-                         ADD_VERTEX(top_bx, by+th, top_bz, 0,1,0, tu_min, tv_min, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,1,0, tu_max, tv_max, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz, 0,1,0, tu_max, tv_min, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz, 0,1,0, tu_min, tv_min, t_light);
-                         ADD_VERTEX(top_bx, by+th, top_bz+tw_z, 0,1,0, tu_min, tv_max, t_light);
-                         ADD_VERTEX(top_bx+tw_x, by+th, top_bz+tw_z, 0,1,0, tu_max, tv_max, t_light);
+                         ADD_VERTEX_GENERIC(top_bx, by+th, top_bz, 0,1,0, tu_min, tv_min, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx, by+th, top_bz+tw_z, 0,1,0, tu_min, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx+tw_x, by+th, top_bz+tw_z, 0,1,0, tu_max, tv_max, t_light, 0);
+                         ADD_VERTEX_GENERIC(top_bx+tw_x, by+th, top_bz, 0,1,0, tu_max, tv_min, t_light, 0);
+                         ADD_QUAD_INDICES(0);
 
                          continue; // Skip standard cube logic
                     }
                     
-                    // WATER SPECIAL CASE: Only render top surface
+                    // WATER SPECIAL CASE
                     if (btype == BLOCK_WATER) {
                         // Only draw +Y face (top) if exposed
                         int neighbor_above = get_block(chunks, num_chunks, b_gx, y + 1, b_gz);
-                        if (neighbor_above != BLOCK_WATER && IS_TRANSPARENT(neighbor_above)) {
-                            int l_sky = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 0);
-                            int l_blk = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 1);
-                            int light_val = (l_blk << 4) | l_sky;
+                        if (neighbor_above != BLOCK_WATER && IS_TRANSPARENT_MESH(neighbor_above)) {
+                            int light_val;
+                            CALC_LIGHT(b_gx, y + 1, b_gz, light_val);
                             
-                            SET_UV(0, 0); // Water uses dirt texture (will be overridden by shader)
+                            SET_UV(0, 0); 
+                            float water_h = 0.75;
                             
-                            ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
-                            ADD_VERTEX(px+1, py+1, pz,   0,1,0, u_max, v_min, light_val);
-                            ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
-                            
-                            ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
-                            ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
-                            ADD_VERTEX(px, py+1, pz+1,   0,1,0, u_min, v_max, light_val);
+                            ADD_VERTEX_GENERIC(px, py+water_h, pz,     0,1,0, u_min, v_min, light_val, 1);
+                            ADD_VERTEX_GENERIC(px+1, py+water_h, pz,   0,1,0, u_max, v_min, light_val, 1);
+                            ADD_VERTEX_GENERIC(px+1, py+water_h, pz+1, 0,1,0, u_max, v_max, light_val, 1);
+                            ADD_VERTEX_GENERIC(px, py+water_h, pz+1,   0,1,0, u_min, v_max, light_val, 1);
+                            ADD_QUAD_INDICES(1);
                         }
-                        continue; // Skip all other faces for water
+                        continue; 
                     }
 
+                    // Normal Block Rendering
                     // +Y face (top)
                     if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y + 1, b_gz))) {
-                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 0);
-                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y + 1, b_gz, 1);
-                        int light_val = (l_blk << 4) | l_sky;
+                        int light_val;
+                        CALC_LIGHT(b_gx, y + 1, b_gz, light_val);
 
                         if (btype == BLOCK_GRASS) { SET_UV(1, 0); }      // Grass Top
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
                         else if (btype == BLOCK_LOG) { SET_UV(3, 0); }   // Log Top
                         else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else if (btype == BLOCK_SAND) { SET_UV(0, 2); }  // Sand
                         else { SET_UV(0, 0); }
 
-                        ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
-                        ADD_VERTEX(px+1, py+1, pz,   0,1,0, u_max, v_min, light_val);
-                        ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
-                        
-                        ADD_VERTEX(px, py+1, pz,     0,1,0, u_min, v_min, light_val);
-                        ADD_VERTEX(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val);
-                        ADD_VERTEX(px, py+1, pz+1,   0,1,0, u_min, v_max, light_val);
+                        ADD_VERTEX_GENERIC(px, py+1, pz,     0,1,0, u_min, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py+1, pz,   0,1,0, u_max, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py+1, pz+1, 0,1,0, u_max, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py+1, pz+1,   0,1,0, u_min, v_max, light_val, 0);
+                        ADD_QUAD_INDICES(0);
                     }
                     
                     // -Y face (bottom)
                     if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y - 1, b_gz))) {
-                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz, 0);
-                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y - 1, b_gz, 1);
-                        int light_val = (l_blk << 4) | l_sky;
+                         int light_val; CALC_LIGHT(b_gx, y - 1, b_gz, light_val);
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 0); }      // Dirt
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
                         else if (btype == BLOCK_LOG) { SET_UV(3, 0); }   // Log Top
                         else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else if (btype == BLOCK_SAND) { SET_UV(0, 2); }  // Sand
                         else { SET_UV(0, 0); }
 
-                        ADD_VERTEX(px, py, pz,     0,-1,0, u_min, v_min, light_val);
-                        ADD_VERTEX(px+1, py, pz,   0,-1,0, u_max, v_min, light_val);
-                        ADD_VERTEX(px+1, py, pz+1, 0,-1,0, u_max, v_max, light_val);
-                        
-                        ADD_VERTEX(px, py, pz,     0,-1,0, u_min, v_min, light_val);
-                        ADD_VERTEX(px+1, py, pz+1, 0,-1,0, u_max, v_max, light_val);
-                        ADD_VERTEX(px, py, pz+1,   0,-1,0, u_min, v_max, light_val);
+                        ADD_VERTEX_GENERIC(px, py, pz,     0,-1,0, u_min, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py, pz,   0,-1,0, u_max, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py, pz+1, 0,-1,0, u_max, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py, pz+1,   0,-1,0, u_min, v_max, light_val, 0);
+                        ADD_QUAD_INDICES(0);
                     }
                     
                     // +X face (right)
                     if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx + 1, y, b_gz))) {
-                        int l_sky = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz, 0);
-                        int l_blk = get_light_global(chunks, num_chunks, b_gx + 1, y, b_gz, 1);
-                        int light_val = (l_blk << 4) | l_sky;
+                         int light_val; CALC_LIGHT(b_gx + 1, y, b_gz, light_val);
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
                         else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
                         else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else if (btype == BLOCK_SAND) { SET_UV(0, 2); }  // Sand
                         else { SET_UV(0, 0); }
 
-                        ADD_VERTEX(px+1, py, pz,     1,0,0, u_min, v_max, light_val);
-                        ADD_VERTEX(px+1, py, pz+1,   1,0,0, u_max, v_max, light_val);
-                        ADD_VERTEX(px+1, py+1, pz+1, 1,0,0, u_max, v_min, light_val);
-                        
-                        ADD_VERTEX(px+1, py, pz,     1,0,0, u_min, v_max, light_val);
-                        ADD_VERTEX(px+1, py+1, pz+1, 1,0,0, u_max, v_min, light_val);
-                        ADD_VERTEX(px+1, py+1, pz,   1,0,0, u_min, v_min, light_val);
+                        ADD_VERTEX_GENERIC(px+1, py, pz,     1,0,0, u_min, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py+1, pz,   1,0,0, u_min, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py+1, pz+1, 1,0,0, u_max, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py, pz+1,   1,0,0, u_max, v_max, light_val, 0);
+                        ADD_QUAD_INDICES(0);
                     }
                     
                     // -X face (left)
                     if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx - 1, y, b_gz))) {
-                        int l_sky = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz, 0);
-                        int l_blk = get_light_global(chunks, num_chunks, b_gx - 1, y, b_gz, 1);
-                        int light_val = (l_blk << 4) | l_sky;
+                         int light_val; CALC_LIGHT(b_gx - 1, y, b_gz, light_val);
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
                         else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
                         else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else if (btype == BLOCK_SAND) { SET_UV(0, 2); }  // Sand
                         else { SET_UV(0, 0); }
 
-                        ADD_VERTEX(px, py, pz,     -1,0,0, u_min, v_max, light_val);
-                        ADD_VERTEX(px, py+1, pz,   -1,0,0, u_min, v_min, light_val);
-                        ADD_VERTEX(px, py+1, pz+1, -1,0,0, u_max, v_min, light_val);
-                        
-                        ADD_VERTEX(px, py, pz,     -1,0,0, u_min, v_max, light_val);
-                        ADD_VERTEX(px, py+1, pz+1, -1,0,0, u_max, v_min, light_val);
-                        ADD_VERTEX(px, py, pz+1,   -1,0,0, u_max, v_max, light_val);
+                        ADD_VERTEX_GENERIC(px, py, pz,     -1,0,0, u_min, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py+1, pz,   -1,0,0, u_min, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py+1, pz+1, -1,0,0, u_max, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py, pz+1,   -1,0,0, u_max, v_max, light_val, 0);
+                        ADD_QUAD_INDICES(0);
                     }
                     
                     // +Z face (front)
                     if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y, b_gz + 1))) {
-                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1, 0);
-                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y, b_gz + 1, 1);
-                        int light_val = (l_blk << 4) | l_sky;
+                         int light_val; CALC_LIGHT(b_gx, y, b_gz + 1, light_val);
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
                         else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
                         else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else if (btype == BLOCK_SAND) { SET_UV(0, 2); }  // Sand
                         else { SET_UV(0, 0); }
 
-                        ADD_VERTEX(px, py, pz+1,     0,0,1, u_min, v_max, light_val);
-                        ADD_VERTEX(px+1, py, pz+1,   0,0,1, u_max, v_max, light_val);
-                        ADD_VERTEX(px+1, py+1, pz+1, 0,0,1, u_max, v_min, light_val);
-                        
-                        ADD_VERTEX(px, py, pz+1,     0,0,1, u_min, v_max, light_val);
-                        ADD_VERTEX(px+1, py+1, pz+1, 0,0,1, u_max, v_min, light_val);
-                        ADD_VERTEX(px, py+1, pz+1,   0,0,1, u_min, v_min, light_val);
+                        ADD_VERTEX_GENERIC(px, py, pz+1,     0,0,1, u_min, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py, pz+1,   0,0,1, u_max, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py+1, pz+1, 0,0,1, u_max, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py+1, pz+1,   0,0,1, u_min, v_min, light_val, 0);
+                        ADD_QUAD_INDICES(0);
                     }
                     
                     // -Z face (back)
                     if (SHOULD_RENDER_FACE(get_block(chunks, num_chunks, b_gx, y, b_gz - 1))) {
-                        int l_sky = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1, 0);
-                        int l_blk = get_light_global(chunks, num_chunks, b_gx, y, b_gz - 1, 1);
-                        int light_val = (l_blk << 4) | l_sky;
+                         int light_val; CALC_LIGHT(b_gx, y, b_gz - 1, light_val);
 
                         if (btype == BLOCK_GRASS) { SET_UV(0, 1); }      // Grass Side
                         else if (btype == BLOCK_DIRT) { SET_UV(0, 0); }  // Dirt
                         else if (btype == BLOCK_STONE) { SET_UV(1, 1); } // Stone
                         else if (btype == BLOCK_LOG) { SET_UV(2, 0); }   // Log Side
                         else if (btype == BLOCK_LEAVES) { SET_UV(2, 1); }// Leaves
+                        else if (btype == BLOCK_SAND) { SET_UV(0, 2); }  // Sand
                         else { SET_UV(0, 0); }
 
-                        ADD_VERTEX(px, py, pz,     0,0,-1, u_min, v_max, light_val);
-                        ADD_VERTEX(px, py+1, pz,   0,0,-1, u_min, v_min, light_val);
-                        ADD_VERTEX(px+1, py+1, pz, 0,0,-1, u_max, v_min, light_val);
-                        
-                        ADD_VERTEX(px, py, pz,     0,0,-1, u_min, v_max, light_val);
-                        ADD_VERTEX(px+1, py+1, pz, 0,0,-1, u_max, v_min, light_val);
-                        ADD_VERTEX(px+1, py, pz,   0,0,-1, u_max, v_max, light_val);
+                        ADD_VERTEX_GENERIC(px, py, pz,     0,0,-1, u_min, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py, pz,   0,0,-1, u_max, v_max, light_val, 0);
+                        ADD_VERTEX_GENERIC(px+1, py+1, pz, 0,0,-1, u_max, v_min, light_val, 0);
+                        ADD_VERTEX_GENERIC(px, py+1, pz,   0,0,-1, u_min, v_min, light_val, 0);
+                        ADD_QUAD_INDICES(0);
                     }
                     
                     #undef CALC_LIGHT
@@ -405,33 +472,88 @@ fn build_chunk_mesh(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                 }
             }
         }
+        
+        #undef ADD_VERTEX_GENERIC
+        #undef ADD_QUAD_INDICES
+        #undef SHOULD_RENDER_FACE
 
-        #undef ADD_VERTEX
-        
-        // Create mesh
-        Mesh mesh = { 0 };
-        mesh.vertexCount = vertex_count;
-        mesh.triangleCount = vertex_count / 3;
-        mesh.vertices = vertices;
-        mesh.normals = normals;
-        mesh.texcoords = texcoords;
-        mesh.colors = colors;
-        
-        // Upload to GPU
-        // Silence "Mesh uploaded successfully" INFO log
-        SetTraceLogLevel(LOG_WARNING);
-        UploadMesh(&mesh, false);
-        SetTraceLogLevel(LOG_INFO);
-        
-        c->chunk_mesh = mesh;
-        c->chunk_model = LoadModelFromMesh(mesh);
-        
-        // Assign shader and texture
+        // Create Opaque Mesh (Chunk)
+        if (v_idx > 0) {
+            Mesh mesh = { 0 };
+            mesh.vertexCount = v_idx;
+            mesh.triangleCount = v_idx / 3; // Unindexed: 1 triangle = 3 vertices
+            mesh.vertices = vertices;
+            mesh.texcoords = texcoords;
+            mesh.normals = normals;
+            mesh.colors = colors;
+            mesh.indices = NULL;
+            
+            SetTraceLogLevel(LOG_WARNING);
+            UploadMesh(&mesh, false);
+            SetTraceLogLevel(LOG_INFO);
+            
+            c->chunk_mesh = mesh;
+            c->chunk_model = LoadModelFromMesh(mesh);
+            c->mesh_built = 1;
+        } else {
+            free(vertices); free(texcoords); free(normals); free(colors); // free(indices); // indices removed
+            c->chunk_mesh = GenMeshCube(0.0f, 0.0f, 0.0f);
+            c->chunk_model = LoadModelFromMesh(c->chunk_mesh);
+            c->mesh_built = 0;
+        }
+
+        // Create Transparent Mesh (Water)
+        if (w_v_idx > 0) {
+            Mesh wmesh = { 0 };
+            wmesh.vertexCount = w_v_idx;
+            wmesh.triangleCount = w_v_idx / 3; // Unindexed
+            wmesh.vertices = w_vertices;
+            wmesh.texcoords = w_texcoords;
+            wmesh.normals = w_normals;
+            wmesh.colors = w_colors;
+            wmesh.indices = NULL;
+            
+            SetTraceLogLevel(LOG_WARNING);
+            UploadMesh(&wmesh, false);
+            SetTraceLogLevel(LOG_INFO);
+            
+            c->water_mesh = wmesh;
+            c->water_model = LoadModelFromMesh(wmesh);
+            c->water_mesh_built = 1;
+        } else {
+            free(w_vertices); free(w_texcoords); free(w_normals); free(w_colors); // free(w_indices);
+            c->water_mesh = GenMeshCube(0.0f, 0.0f, 0.0f);
+            c->water_model = LoadModelFromMesh(c->water_mesh);
+            c->water_mesh_built = 0;
+        }
+
+        // Assign shader and texture for opaque mesh
         c->chunk_model.materials[0].shader = get_shader_lighting();
         c->chunk_model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = get_tex_atlas();
         
-        c->mesh_built = 1;
+        // Assign shader and texture for water mesh
+        c->water_model.materials[0].shader = get_shader_lighting(); // REUSE lighting shader for now
+        c->water_model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = get_tex_atlas();
+
         c->mesh_dirty = 0;
+
+        // Cleanup temp arrays
+        // DO NOT FREE here! The Model owns these pointers now (copied by LoadModelFromMesh).
+        // UnloadModel() will free them when we rebuild.
+        // free(vertices);
+        // free(texcoords);
+        // free(normals);
+        // free(colors);
+        // free(indices);
+        
+        // free(w_vertices);
+        // free(w_texcoords);
+        // free(w_normals);
+        // free(w_colors);
+        // free(w_indices);
+
+        #undef MAX_VERTICES
+        #undef MAX_INDICES
     }
 }
 
@@ -580,5 +702,13 @@ fn build_plant_mesh(c: Chunk*, plant_tex: rl::Texture2D) {
         c->plant_model.materials[0].maps[MATERIAL_MAP_DIFFUSE].texture = get_tex_grass(); // Use grass texture again
         
         c->plant_mesh_built = 1;
+        
+        // DO NOT FREE! Model owns data.
+        // free(vertices);
+        // free(texcoords);
+        // free(normals);
+        // ...
+        
+        #undef ADD_VERTEX_P
     }
 }

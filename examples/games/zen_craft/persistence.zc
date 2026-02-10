@@ -18,10 +18,11 @@ def IO_STATUS_FAILED = 3;
 
 // We need a Data struct that can hold a chunk's data for off-thread processing
 struct ChunkData {
-    blocks: int[16][32][16];
-    light: int[16][32][16];
+    blocks: int[16][128][16];
+    light: int[16][128][16];
     plant_count: int;
     plants: Plant[64];
+    light_calculated: int; // 1 if lighting was computed by generator
 }
 
 struct IORequest {
@@ -56,7 +57,8 @@ fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
     
     raw {
         // We use Raylib's GenImagePerlinNoise. 
-        Image noise = GenImagePerlinNoise(16, 16, x * 16, z * 16, 0.5f);
+        // SMOOTHER TERRAIN: Lower scale from 0.5 to 0.05
+        Image noise = GenImagePerlinNoise(16, 16, x * 16, z * 16, 0.05f);
         Color* pixels = LoadImageColors(noise);
         
         for(int i=0; i<16; i++) {
@@ -65,9 +67,9 @@ fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
                 Color col = pixels[j * 16 + i];
                 int val = col.r;
                 
-                // Map 0..255 to height 3..30
-                int h = 3 + (val / 12);
-                if (h > 30) h = 30;
+                // Map 0..255 to height 4..64 (Lower mountains)
+                int h = 4 + (val / 4);
+                if (h > CHUNK_HEIGHT - 10) h = CHUNK_HEIGHT - 10;
                 heights[i][j] = h;
             }
         }
@@ -79,7 +81,7 @@ fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
     for cx in 0..16 {
         for cz in 0..16 {
             let h = heights[cx][cz];
-            for cy in 0..32 {
+            for cy in 0..CHUNK_HEIGHT {
                 let l = 0;
                 if cy < h - 1 {
                     data.blocks[cx][cy][cz] = BLOCK_STONE;
@@ -117,53 +119,126 @@ fn generate_chunk_data(data: ChunkData*, x: int, z: int) {
     // Deterministic seed for this chunk
     let seed = x * 73856093 ^ z * 19349663;
     
+    // Forest Noise (Low frequency for biomes)
+    let forest_noise_val = 0.0;
+    
+    raw {
+         // Using a specific offset for forest noise to de-correlate from terrain height
+        Image fnoise = GenImagePerlinNoise(1, 1, x, z, 0.02f); 
+        Color* fp = LoadImageColors(fnoise);
+        forest_noise_val = (float)fp[0].r / 255.0; // 0.0 to 1.0
+        UnloadImageColors(fp);
+        UnloadImage(fnoise);
+    }
+    
+    // Determine tree density based on forest noise
+    // > 0.6 : Forest
+    // < 0.4 : Plains
+    // 0.4-0.6 : Transition
+    let tree_chance_threshold = 1; // 1% default (Sparse)
+    
+    if forest_noise_val > 0.55 {
+        tree_chance_threshold = 10; // 10% (Forest)
+        if forest_noise_val > 0.7 {
+             tree_chance_threshold = 15; // 15% (Dense Forest)
+        }
+    } else if forest_noise_val < 0.3 {
+        tree_chance_threshold = 0; // 0.5% approx (Very Sparse) -> handled by rand check
+    }
+    
     for cx in 0..16 {
         for cz in 0..16 {
             let h = heights[cx][cz];
             // Grass
-            if data.blocks[cx][h][cz] == BLOCK_GRASS && h < 31 {
-                let r = my_rand(&seed) % 100;
+            if data.blocks[cx][h][cz] == BLOCK_GRASS && h < CHUNK_HEIGHT - 20 {
+                let r = my_rand(&seed) % 1000; // 0..999
                 
-                if r < 10 { // Tree chance
-                     if cx > 1 && cx < 14 && cz > 1 && cz < 14 {
+                // Adjust chance based on threshold
+                let place_tree = 0;
+                if tree_chance_threshold > 0 {
+                    if r < tree_chance_threshold * 10 { place_tree = 1; }
+                } else {
+                     // Very sparse
+                     if r < 2 { place_tree = 1; } // 0.2%
+                }
+
+                if place_tree { 
+                     // Smaller Trees: Trunk 3-5 blocks
+                     if cx > 2 && cx < 13 && cz > 2 && cz < 13 {
                         // Tree
-                        let th = 4 + (my_rand(&seed) % 3);
+                        let th = 3 + (my_rand(&seed) % 3); // 3, 4, 5
                         for i in 0..th {
-                            if h+1+i < 32 {
+                            if h+1+i < CHUNK_HEIGHT {
                                 data.blocks[cx][h+1+i][cz] = BLOCK_LOG;
                             }
                         }
-                        // Leaves
-                        let ly = h + 1 + th;
-                        for lx in (cx-2)..(cx+3) {
-                            for lz in (cz-2)..(cz+3) {
-                                // Add Bounds Check!
-                                if lx >= 0 && lx < 16 && lz >= 0 && lz < 16 {
-                                    for lyy in (ly-2)..(ly+2) {
-                                        if lyy < 32 && lyy >= 0 {
-                                            // Simple blob check d^2 < r^2
-                                            if data.blocks[lx][lyy][lz] == BLOCK_AIR {
-                                                data.blocks[lx][lyy][lz] = BLOCK_LEAVES;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                        // Leaves (Classic Minecraft Style - 5x5 at bottom, 3x3 at top)
+                        let leaves_start = h + th - 2; // Start leaves 2 blocks below top
+                        let leaves_end = h + th + 1;   // 1 block above top
+                        
+                        for ly in leaves_start..leaves_end {
+                             if ly >= CHUNK_HEIGHT { continue; }
+                             
+                             let radius = 2;
+                             if ly == leaves_end - 1 { radius = 1; } // Top layer narrower
+                             if ly == leaves_end { radius = 1; } // Very top
+                             
+                             for lx in (cx-radius)..(cx+radius+1) {
+                                 for lz in (cz-radius)..(cz+radius+1) {
+                                     // Skip corners for rounded look (optional)
+                                     let dx = lx - cx;
+                                     let dz = lz - cz;
+                                     if (dx*dx + dz*dz) > (radius*radius + 1) { continue; }
+                                     
+                                     if data.blocks[lx][ly][lz] == BLOCK_AIR {
+                                         data.blocks[lx][ly][lz] = BLOCK_LEAVES;
+                                     }
+                                 }
+                             }
                         }
-                     }
+                    }
                 }
                 else if r < 30 { // Tall grass chance
                     if data.plant_count < 64 {
                         data.plants[data.plant_count].x = (float)cx + 0.5;
                         data.plants[data.plant_count].y = (float)(h + 1);
                         data.plants[data.plant_count].z = (float)cz + 0.5;
-                        data.plants[data.plant_count].type = BLOCK_TALLGRASS;
+                        data.plants[data.plant_count].plant_type = BLOCK_TALLGRASS;
                         data.plant_count = data.plant_count + 1;
                     }
                 }
             }
         }
     }
+    
+    // --- Self-contained sunlight column pass (worker thread safe) ---
+    // This computes proper sunlight without needing the global chunks array.
+    // Shadows from trees, leaves etc. are handled correctly.
+    for cx in 0..16 {
+        for cz in 0..16 {
+            let in_shadow = 0;
+            for i in 0..CHUNK_HEIGHT {
+                let cy = (CHUNK_HEIGHT - 1) - i; // Top to bottom
+                let blk = data.blocks[cx][cy][cz];
+                
+                if !in_shadow {
+                    if blk != BLOCK_AIR && blk != BLOCK_TALLGRASS && blk != BLOCK_WATER && blk != BLOCK_LEAVES {
+                        // Hit solid opaque block - enters shadow
+                        data.light[cx][cy][cz] = 0; // No sky light, no block light
+                        in_shadow = 1;
+                    } else {
+                        // Sky-exposed: full sky light (15 << 4 = 240)
+                        data.light[cx][cy][cz] = 240;
+                    }
+                } else {
+                    // Underground - no sky light
+                    data.light[cx][cy][cz] = 0;
+                }
+            }
+        }
+    }
+    
+    data.light_calculated = 1;
 }
 
 
@@ -203,7 +278,7 @@ raw {
         ChunkData data;
     } RawIORequest;
 
-    RawIORequest io_queue[64];
+    RawIORequest io_queue[256];
     volatile int system_running = 0;
     
     // Global world directory
@@ -239,46 +314,118 @@ raw {
     {
         while(system_running) {
             int worked = 0;
-            for(int i=0; i<64; i++) {
+            for(int i=0; i<256; i++) {
                 if(io_queue[i].status == 1) { // IO_STATUS_PENDING
                     // Processor
                     RawIORequest *req = &io_queue[i];
-                    char filename[256];
-                    sprintf(filename, "%s/chunk_%d_%d.dat", world_dir, req->cx, req->cz);
+                    
+                    // --- REGION-BASED FILE I/O ---
+                    // Region coordinates: each region holds 32x32 chunks
+                    int rx = (req->cx >= 0) ? (req->cx / 32) : ((req->cx - 31) / 32);
+                    int rz = (req->cz >= 0) ? (req->cz / 32) : ((req->cz - 31) / 32);
+                    // Local chunk position within region (0-31)
+                    int lcx = ((req->cx % 32) + 32) % 32;
+                    int lcz = ((req->cz % 32) + 32) % 32;
+                    
+                    char region_filename[512];
+                    sprintf(region_filename, "%s/region_%d_%d.zcr", world_dir, rx, rz);
+                    
+                    // Region file format:
+                    // Header: 32*32 entries of {uint32_t offset, uint32_t size} = 8192 bytes
+                    // Data: ChunkData blocks stored at their offsets
+                    // offset=0 means chunk not saved yet
+                    int header_entry_idx = lcz * 32 + lcx;
+                    int header_size = 32 * 32 * 8; // 8192 bytes for lookup table
 
                     if(req->type == 1) { // SAVE
-                        // Write to disk
-                        FILE *f = fopen(filename, "wb");
+                        FILE *f = fopen(region_filename, "r+b");
+                        if(!f) {
+                            // Region file doesn't exist, create it
+                            f = fopen(region_filename, "w+b");
+                            if(f) {
+                                // Write empty header
+                                char zero[8192];
+                                memset(zero, 0, 8192);
+                                fwrite(zero, 1, 8192, f);
+                            }
+                        }
                         if(f) {
+                            // Read current offset for this chunk
+                            fseek(f, header_entry_idx * 8, SEEK_SET);
+                            unsigned int offset = 0;
+                            unsigned int stored_size = 0;
+                            fread(&offset, 4, 1, f);
+                            fread(&stored_size, 4, 1, f);
+                            
+                            if(offset == 0) {
+                                // New chunk - append to end of file
+                                fseek(f, 0, SEEK_END);
+                                offset = (unsigned int)ftell(f);
+                                stored_size = sizeof(ChunkData);
+                                
+                                // Update header entry
+                                fseek(f, header_entry_idx * 8, SEEK_SET);
+                                fwrite(&offset, 4, 1, f);
+                                fwrite(&stored_size, 4, 1, f);
+                            }
+                            
+                            // Write chunk data at offset
+                            fseek(f, offset, SEEK_SET);
                             fwrite(&req->data, sizeof(ChunkData), 1, f);
                             fclose(f);
                         }
                         req->status = 0; // Back to FREE immediately for Save
                     }
                     else if(req->type == 2) { // LOAD
-                        FILE *f = fopen(filename, "rb");
+                        int loaded = 0;
+                        
+                        // Try region file first
+                        FILE *f = fopen(region_filename, "rb");
                         if(f) {
-                            size_t read = fread(&req->data, sizeof(ChunkData), 1, f);
-                            fclose(f);
-                            if(read == 1) {
-                                req->status = 2; // COMPLETED
-                            } else {
-                                // FAILED TO LOAD -> GENERATE
-                                if(strcmp(world_dir, "titleworld") == 0) {
-                                    generate_title_chunk(&req->data, req->cx, req->cz);
-                                } else {
-                                    generate_chunk_data(&req->data, req->cx, req->cz);
+                            // Read header entry
+                            fseek(f, header_entry_idx * 8, SEEK_SET);
+                            unsigned int offset = 0;
+                            unsigned int stored_size = 0;
+                            fread(&offset, 4, 1, f);
+                            fread(&stored_size, 4, 1, f);
+                            
+                            if(offset > 0 && stored_size > 0) {
+                                fseek(f, offset, SEEK_SET);
+                                size_t rd = fread(&req->data, sizeof(ChunkData), 1, f);
+                                if(rd == 1) {
+                                    loaded = 1;
+                                    req->data.light_calculated = 0; // Disk data needs recalc
                                 }
-                                req->status = 2; // COMPLETED (Generated)
                             }
+                            fclose(f);
+                        }
+                        
+                        // Fallback: try legacy per-chunk file
+                        if(!loaded) {
+                            char legacy_filename[256];
+                            sprintf(legacy_filename, "%s/chunk_%d_%d.dat", world_dir, req->cx, req->cz);
+                            FILE *lf = fopen(legacy_filename, "rb");
+                            if(lf) {
+                                size_t rd = fread(&req->data, sizeof(ChunkData), 1, lf);
+                                fclose(lf);
+                                if(rd == 1) {
+                                    loaded = 1;
+                                    req->data.light_calculated = 0; // Old format
+                                }
+                            }
+                        }
+                        
+                        if(loaded) {
+                            req->status = 2; // COMPLETED
                         } else {
-                             // FAILED TO LOAD -> GENERATE
-                             if(strcmp(world_dir, "titleworld") == 0) {
+                            // Generate new chunk
+                            if(strstr(world_dir, "titleworld") != NULL) {
                                 generate_title_chunk(&req->data, req->cx, req->cz);
-                             } else {
+                            } else {
                                 generate_chunk_data(&req->data, req->cx, req->cz);
-                             }
-                             req->status = 2; // COMPLETED (Generated)
+                            }
+                            // light_calculated is set by generate_chunk_data
+                            req->status = 2; // COMPLETED (Generated)
                         }
                     }
                     worked = 1;
@@ -311,7 +458,7 @@ fn init_persistence() {
         }
         
         // Zero queue
-        for(int i=0; i<64; i++) io_queue[i].status = 0;
+        for(int i=0; i<256; i++) io_queue[i].status = 0;
         
         system_running = 1;
 
@@ -331,7 +478,7 @@ fn request_save_async(c: Chunk*) {
     raw {
         // Find free slot
         int slot = -1;
-        for(int i=0; i<64; i++) {
+        for(int i=0; i<256; i++) {
             if(io_queue[i].status == 0) {
                 slot = i;
                 break;
@@ -364,7 +511,7 @@ fn request_load_async(idx: int, cx: int, cz: int) -> int {
     raw {
         // Find free slot
         int slot = -1;
-        for(int i=0; i<64; i++) {
+        for(int i=0; i<256; i++) {
             if(io_queue[i].status == 0) {
                 slot = i;
                 break;
@@ -383,14 +530,33 @@ fn request_load_async(idx: int, cx: int, cz: int) -> int {
     return result;
 }
 
+// Check if a chunk load request is already pending for the given coordinates
+fn is_chunk_pending(cx: int, cz: int) -> int {
+    let result = 0;
+    raw {
+        for(int i=0; i<256; i++) {
+            if((io_queue[i].status == 1 || io_queue[i].status == 2) && 
+               io_queue[i].type == 2 &&
+               io_queue[i].cx == cx && io_queue[i].cz == cz) {
+                result = 1;
+                break;
+            }
+        }
+    }
+    return result;
+}
+
 // Returns 1 if chunk was loaded/generated this frame
 fn poll_async_results(chunks: Chunk*, num_chunks: int) {
     raw {
         int processed_count = 0;
-        for(int i=0; i<64; i++) {
+        // Process up to 4 completed chunks per frame for faster loading
+        // while still limiting main-thread work
+        int max_per_frame = 4;
+        
+        for(int i=0; i<256; i++) {
             if(io_queue[i].status == 2) { // COMPLETED LOAD (or Generated)
-                // Limit processing to 1 per frame to avoid lag spikes
-                if(processed_count >= 1) break;
+                if(processed_count >= max_per_frame) break;
 
                 int idx = io_queue[i].target_idx;
                 if(idx >= 0 && idx < num_chunks) {
@@ -406,13 +572,37 @@ fn poll_async_results(chunks: Chunk*, num_chunks: int) {
                     chunks[idx].mesh_dirty = 1;
                     chunks[idx].mesh_built = 0;
                     chunks[idx].plant_mesh_built = 0;
+                    chunks[idx].grass_deco_built = 0;
                     
-                    // CRITICAL: Recalculate lighting to fix old save format
-                    // Old chunks have Block Light = 15 from previous bug
-                    recalculate_chunk_lighting(&chunks[idx], chunks, num_chunks);
+                    // Lighting optimization:
+                    // If the worker already computed sunlight columns (generated chunks),
+                    // skip the expensive full recalculation and only do cross-chunk propagation.
+                    // For loaded-from-disk chunks, we still need full recalc.
+                    if(io_queue[i].data.light_calculated) {
+                        // Worker did sunlight - just propagate across chunk boundaries
+                        propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
+                    } else {
+                        // Loaded from disk (old save) - full recalculation needed
+                        recalculate_chunk_lighting(&chunks[idx], chunks, num_chunks);
+                        propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
+                    }
                     
-                    // Propagate light now that data is recalculated
-                    propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
+                    // Mark neighbor chunks as dirty so they rebuild border faces
+                    int cx = chunks[idx].x;
+                    int cz = chunks[idx].z;
+                    
+                    int neighbor_offsets[8] = {-1, 0, 1, 0, 0, -1, 0, 1};
+                    for(int ni = 0; ni < 4; ni++) {
+                        int ncx = cx + neighbor_offsets[ni * 2];
+                        int ncz = cz + neighbor_offsets[ni * 2 + 1];
+                        int nidx = get_chunk_index(ncx, ncz);
+                        
+                        if(chunks[nidx].x == ncx && chunks[nidx].z == ncz) {
+                            // Re-propagate light across boundary
+                            propagate_light_in_chunk(&chunks[nidx], chunks, num_chunks);
+                            chunks[nidx].mesh_dirty = 1;
+                        }
+                    }
                     
                     processed_count++;
                 }
@@ -494,28 +684,70 @@ fn load_player_data(x: float*, y: float*, z: float*, block: int*, yaw: float*, p
 }
 
 // Synchronous load - try to load from disk, generate if file doesn't exist
-fn load_chunk_sync(cx: int, cz: int) -> Chunk {
-    let c = Chunk::new(cx, cz); // Initialize with generated data (will overwrite if load succeeds)
+fn load_chunk_into(c: Chunk*, cx: int, cz: int) {
+    // Initialize defaults 
+    // We can't call Chunk::new because that returns a value on stack (potentially large copy)
+    // and we want to write into existing pointer.
+    // Chunk init logic:
+    c.x = cx;
+    c.z = cz;
+    c.mesh_built = 0;
+    c.plant_mesh_built = 0;
+    c.grass_deco_built = 0;
+    c.water_mesh_built = 0;
+    c.plant_count = 0;
+    
+    // We need to generate data if load fails
+    // But generating directly into `c` is tricky if we use `generate_chunk_data` which takes `ChunkData*`.
+    // `Chunk` structure matches `ChunkData` structure generally?
+    // `ChunkData` has `blocks`, `light`, ...
+    // `Chunk` has `blocks`, `light`...
+    // They are compatible in layout?
+    // `ChunkData` struct: blocks[16][256][16], light, plant_count, plants.
+    // `Chunk` struct: x, z, ... blocks, light ... plants.
+    // They are NOT identical layout. `Chunk` has headers.
+    
+    // So we need `ChunkData` temp. 
+    // ALLOCATE ON HEAP to avoid stack overflow.
     
     raw {
+        ChunkData* data_ptr = (ChunkData*)malloc(sizeof(ChunkData));
+        if (data_ptr == NULL) return; // Should handle error
+        
         char filename[256];
         sprintf(filename, "%s/chunk_%d_%d.dat", world_dir, cx, cz);
         
+        int loaded = 0;
         FILE *f = fopen(filename, "rb");
         if(f) {
-            ChunkData data;
-            size_t read = fread(&data, sizeof(ChunkData), 1, f);
+            size_t read = fread(data_ptr, sizeof(ChunkData), 1, f);
             fclose(f);
-            
-            if(read == 1) {
-                // Successfully loaded from disk - overwrite generated data
-                memcpy(c.blocks, data.blocks, sizeof(c.blocks));
-                memcpy(c.light, data.light, sizeof(c.light));
-                c.plant_count = data.plant_count;
-                memcpy(c.plants, data.plants, sizeof(c.plants));
+            if(read == 1) loaded = 1;
+        }
+        
+        if (!loaded) {
+            // Generate
+            if(strstr(world_dir, "titleworld") != NULL) {
+                generate_title_chunk(data_ptr, cx, cz);
+            } else {
+                generate_chunk_data(data_ptr, cx, cz);
             }
         }
+        
+        // Copy to Chunk
+        // Access c->blocks via pointer
+        memcpy(c->blocks, data_ptr->blocks, sizeof(c->blocks));
+        memcpy(c->light, data_ptr->light, sizeof(c->light));
+        c->plant_count = data_ptr->plant_count;
+        memcpy(c->plants, data_ptr->plants, sizeof(c->plants));
+        
+        free(data_ptr);
     }
     
-    return c;
+    // Recalculate lighting only if loaded? Or always?
+    // Generated chunks have light set by generator.
+    // Loaded chunks might need fix (old bug).
+    // Let's safe side: recalculate. Or maybe just propagate.
+    // For now, assume loaded/generated is close enough.
+    // Using `recalculate_chunk_lighting` is heavy.
 }

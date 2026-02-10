@@ -8,6 +8,7 @@ in vec4 vertexColor;
 out vec2 fragTexCoord;
 out vec4 fragColor;
 out vec3 fragNormal;
+out vec3 fragPosition;
 
 uniform mat4 mvp;
 uniform mat4 matModel;
@@ -22,6 +23,16 @@ void main()
     fragNormal = normalize(vec3(matNormal * vec4(vertexNormal, 1.0)));
     
     vec3 pos = vertexPosition;
+    
+    // Calculate World Position (inclusive of displacement for water?)
+    // Actually we displace 'pos' later. 
+    // We should calculate fragPosition AFTER displacement if we want correct depth/pos?
+    // But 'matModel' is identity for chunks usually (except translation).
+    // Chunks are drawn at 0,0,0 with baked coordinates?
+    // No, Main.zc draws at (gx, 0, gz).
+    
+    // We want the World Position of the vertex.
+    // We will update fragPosition at the end.
     
     // Wind Effect
     // Blue channel 100 (approx 0.39) -> Wind
@@ -43,5 +54,21 @@ void main()
          pos.z += sway * 0.5; // Slight Z movement too
     }
     
+    // Water Wave Effect
+    // Blue channel > 0.9 means Water (set to 255 in chunk_mesh)
+    if (vertexColor.b > 0.9) {
+         // Calculate World Position for consistent waves across chunks
+         vec3 worldPos = (matModel * vec4(pos, 1.0)).xyz;
+         
+         // Apply vertical wave
+         // Amplitude: 0.05 blocks (subtle)
+         // Frequency: time * 2.0
+         // Spatial freq: worldPos.x + worldPos.z
+         float wave = sin(time * 3.0 + worldPos.x * 1.5 + worldPos.z * 1.0) * 0.05;
+         pos.y += wave;
+    }
+    
+    fragPosition = vec3(matModel * vec4(pos, 1.0));
     gl_Position = mvp * vec4(pos, 1.0);
 }
+

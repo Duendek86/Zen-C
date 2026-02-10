@@ -15,20 +15,21 @@ extern fn rand() -> int;
 extern fn abs(v: int) -> int;
 
 // World configuration
-def RENDER_DISTANCE = 3;
-def CHUNK_MAP_SIZE = 7; // RENDER_DISTANCE * 2 + 1
-def MAX_CHUNKS = 49;    // CHUNK_MAP_SIZE * CHUNK_MAP_SIZE
+def RENDER_DISTANCE = 6;
+def CHUNK_MAP_SIZE = 13; // RENDER_DISTANCE * 2 + 1
+def MAX_CHUNKS = 169;    // CHUNK_MAP_SIZE * CHUNK_MAP_SIZE
+#define CHUNK_HEIGHT 128
 
 struct Plant {
     x: float;
     y: float;
     z: float;
-    type: int; // e.g. BLOCK_TALLGRASS
+    plant_type: int; // e.g. BLOCK_TALLGRASS
 }
 
 struct Chunk {
-    blocks: int[16][32][16]; // x, y, z
-    light: int[16][32][16];  // Light levels 0-15
+    blocks: int[16][128][16]; // x, y, z
+    light: int[16][128][16];  // Light levels 0-15
     
     // Vegetation entities
     plants: Plant[64];
@@ -37,6 +38,11 @@ struct Chunk {
     // Consolidated Mesh (Single draw call per chunk)
     chunk_mesh: rl::Mesh;
     chunk_model: rl::Model;
+    
+    // Separate Water Mesh (For transparency sorting)
+    water_mesh: rl::Mesh;
+    water_model: rl::Model;
+    water_mesh_built: int;
     
     // Plant Mesh (Separate draw call for non-block entities)
     plant_mesh: rl::Mesh;
@@ -70,7 +76,7 @@ fn get_chunk_index(cx: int, cz: int) -> int {
 
 fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
     // Check height bounds
-    if y < 0 || y >= 32 { return BLOCK_AIR; }
+    if y < 0 || y >= CHUNK_HEIGHT { return BLOCK_AIR; }
     
     // Determine chunk coordinates
     let cx = (int)floor((float)x / 16.0);
@@ -90,7 +96,7 @@ fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
 }
 
 fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int) {
-    if y < 0 || y >= 32 { return; }
+    if y < 0 || y >= CHUNK_HEIGHT { return; }
 
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
@@ -106,7 +112,7 @@ fn set_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, type: int)
 }
 
 fn get_light_levels(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int {
-    if y < 0 || y >= 32 { return 240; } // 15 << 4 (Full Sky, No Block)
+    if y < 0 || y >= CHUNK_HEIGHT { return 240; } // 15 << 4 (Full Sky, No Block)
 
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
@@ -124,7 +130,7 @@ fn get_light_levels(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> 
 }
 
 fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, channel: int) -> int {
-    if y < 0 || y >= 32 { 
+    if y < 0 || y >= CHUNK_HEIGHT { 
         if channel == 0 { return 15; } 
         return 0; 
     }
@@ -159,7 +165,7 @@ fn get_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, cha
 }
 
 fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val: int, channel: int) {
-    if y < 0 || y >= 32 { return; }
+    if y < 0 || y >= CHUNK_HEIGHT { return; }
 
     let cx = (int)floor((float)x / 16.0);
     let cz = (int)floor((float)z / 16.0);
@@ -184,9 +190,9 @@ fn set_light_global(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int, val
 
 fn update_sunlight_column(chunks: Chunk*, num_chunks: int, x: int, z: int) {
     let casting_shadow = 0;
-for i in 0..32 {
-        let y = 31 - i;
-let blk = get_block(chunks, num_chunks, x, y, z);
+    for i in 0..CHUNK_HEIGHT {
+        let y = (CHUNK_HEIGHT - 1) - i;
+        let blk = get_block(chunks, num_chunks, x, y, z);
         
         if casting_shadow == 0 {
              if (!IS_TRANSPARENT(blk)) {
@@ -213,13 +219,15 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
     let gx_base = c.x * 16;
     let gz_base = c.z * 16;
     
-    let q: LightQueue;
-    q.head = 0;
-    q.tail = 0;
+    let q_ptr = (LightQueue*)malloc(sizeof(LightQueue));
+    if (q_ptr == NULL) return; // Allocation failed
+    
+    (*q_ptr).head = 0;
+    (*q_ptr).tail = 0;
     
     // 1. Initialize Queue with sources and incoming light from neighbors
     for x in 0..16 {
-        for y in 0..32 {
+        for y in 0..CHUNK_HEIGHT {
             for z in 0..16 {
                 let current_light = 0;
                 
@@ -237,7 +245,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
                 // Note: Sunlight is set in update_sunlight_column (Channel 0)
                 // Torches should be set in place_torch (Channel 1)
                 if current_light > 0 {
-                    queue_push(&q, gx_base + x, y, gz_base + z);
+                    queue_push(q_ptr, gx_base + x, y, gz_base + z);
                 } 
                 else if (IS_TRANSPARENT(c.blocks[x][y][z])) {
                     // Check neighbors for incoming light
@@ -269,7 +277,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
                             c.light[x][y][z] = (old_val & 0xF0) | ((max_n - 1) & 0xF);
                         }
                         
-                        queue_push(&q, gx, y, gz);
+                        queue_push(q_ptr, gx, y, gz);
                     }
                 }
             }
@@ -277,8 +285,8 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
     }
     
     // 2. Process Queue (BFS)
-    while !queue_is_empty(&q) {
-        let node = queue_pop(&q);
+    while !queue_is_empty(q_ptr) {
+        let node = queue_pop(q_ptr);
         
         let light = get_light_global(chunks, num_chunks, node.x, node.y, node.z, channel);
         if light <= 1 { continue; } // Cannot propagate further
@@ -292,7 +300,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
         if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
              if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
                  set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
-                 queue_push(&q, nx, ny, nz);
+                 queue_push(q_ptr, nx, ny, nz);
              }
         }
         // -X
@@ -300,7 +308,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
         if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
              if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
                  set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
-                 queue_push(&q, nx, ny, nz);
+                 queue_push(q_ptr, nx, ny, nz);
              }
         }
         // +Y
@@ -308,7 +316,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
         if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
              if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
                  set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
-                 queue_push(&q, nx, ny, nz);
+                 queue_push(q_ptr, nx, ny, nz);
              }
         }
         // -Y
@@ -316,7 +324,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
         if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
              if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
                  set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
-                 queue_push(&q, nx, ny, nz);
+                 queue_push(q_ptr, nx, ny, nz);
              }
         }
         // +Z
@@ -324,7 +332,7 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
         if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
              if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
                  set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
-                 queue_push(&q, nx, ny, nz);
+                 queue_push(q_ptr, nx, ny, nz);
              }
         }
         // -Z
@@ -332,10 +340,12 @@ fn propagate_light_internal(c: Chunk*, chunks: Chunk*, num_chunks: int, channel:
         if IS_TRANSPARENT(get_block(chunks, num_chunks, nx, ny, nz)) {
              if get_light_global(chunks, num_chunks, nx, ny, nz, channel) < light - 1 {
                  set_light_global(chunks, num_chunks, nx, ny, nz, light - 1, channel);
-                 queue_push(&q, nx, ny, nz);
+                 queue_push(q_ptr, nx, ny, nz);
              }
         }
     }
+    
+    free(q_ptr); // Cleanup
 }
 
 fn propagate_light_in_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
@@ -365,7 +375,7 @@ fn recalculate_chunk_lighting(c: Chunk*, chunks: Chunk*, num_chunks: int) {
     lx = 0;
     while lx < 16 {
         let ly = 0;
-        while ly < 32 {
+        while ly < CHUNK_HEIGHT {
             let lz = 0;
             while lz < 16 {
                 let blk = c.blocks[lx][ly][lz];
@@ -478,9 +488,9 @@ impl Chunk {
                     Color col = pixels[j * 16 + i];
                     int val = col.r; // Grayscale, so r=g=b
 
-                    // Map 0..255 to height 3..25 (More verticality)
-                    int h = 3 + (val / 12);
-                    if (h > 30) h = 30;
+                    // Map 0..255 to height 4..130 (More verticality)
+                    int h = 4 + (val / 2);
+                    if (h > CHUNK_HEIGHT - 10) h = CHUNK_HEIGHT - 10;
                     heights[i][j] = h;
                 }
             }
@@ -495,7 +505,7 @@ impl Chunk {
         for cx in 0..16 {
             for cz in 0..16 {
                 let h = heights[cx][cz];
-                for cy in 0..32 {
+                for cy in 0..CHUNK_HEIGHT {
                     // Default light
                     let l = 0;
                     
@@ -504,9 +514,9 @@ impl Chunk {
                     } else if cy < h {
                         c.blocks[cx][cy][cz] = BLOCK_DIRT;
                     } else if cy == h {
-                        // Underwater surfaces are dirt, above water surfaces are grass
+                        // Underwater surfaces are SAND, above water surfaces are grass
                         if h < SEA_LEVEL_GEN {
-                            c.blocks[cx][cy][cz] = BLOCK_DIRT;
+                            c.blocks[cx][cy][cz] = BLOCK_SAND;
                         } else {
                             c.blocks[cx][cy][cz] = BLOCK_GRASS;
                         }
@@ -553,7 +563,7 @@ impl Chunk {
                     if (h < SEA_LEVEL_VEG) continue;
                     
                     // Check if surface is grass
-                    if (c.blocks[cx][h][cz] == BLOCK_GRASS && h < 31) {
+                    if (c.blocks[cx][h][cz] == BLOCK_GRASS && h < CHUNK_HEIGHT - 1) {
                         int r = rand() % 100;
                         
                         // 10% chance for Tree
@@ -611,13 +621,13 @@ impl Chunk {
                                 // Tree Logic Inline
                                 int tree_h = 5;
                                 for(int k=0; k<tree_h; k++) {
-                                    if(h+1+k < 32) c.blocks[cx][h+1+k][cz] = BLOCK_LOG;
+                                    if(h+1+k < CHUNK_HEIGHT) c.blocks[cx][h+1+k][cz] = BLOCK_LOG;
                                 }
                                 // Leaves ... simplified
                                 int ly = h + 1 + tree_h - 2;
                                 for(int ly_off = 0; ly_off < 2; ly_off++) {
                                     int chy = ly + ly_off;
-                                    if(chy < 32) {
+                                    if(chy < CHUNK_HEIGHT) {
                                         for(int lx=-2; lx<=2; lx++) {
                                             for(int lz=-2; lz<=2; lz++) {
                                                 if(abs(lx)==2 && abs(lz)==2) continue;
@@ -634,7 +644,7 @@ impl Chunk {
                                 }
                                 // Top
                                 int th = h + 1 + tree_h;
-                                if(th < 32) {
+                                if(th < CHUNK_HEIGHT) {
                                      c.blocks[cx][th][cz] = BLOCK_LEAVES;
                                      if(cx+1<16) c.blocks[cx+1][th][cz] = BLOCK_LEAVES;
                                      if(cx-1>=0) c.blocks[cx-1][th][cz] = BLOCK_LEAVES;
@@ -650,7 +660,7 @@ impl Chunk {
                                 c.plants[c.plant_count].x = (float)cx + 0.5f;
                                 c.plants[c.plant_count].y = (float)(h + 1);
                                 c.plants[c.plant_count].z = (float)cz + 0.5f;
-                                c.plants[c.plant_count].type = BLOCK_TALLGRASS; 
+                                c.plants[c.plant_count].plant_type = BLOCK_TALLGRASS; 
                                 c.plant_count++;
                              }
                         }
@@ -664,70 +674,132 @@ impl Chunk {
         return c;
     }
 
-    // Updated draw signature to include player position for LOD
-    fn draw(self, chunks: Chunk*, num_chunks: int, builds_this_frame: int*, max_builds: int, px: float, pz: float) {
-        // Rebuild mesh if dirty
-        if self.mesh_dirty != 0 {
-            // Rate limit mesh building
-            if *builds_this_frame < max_builds {
-                build_chunk_mesh(self, chunks, num_chunks);
-                build_plant_mesh(self, get_tex_grass());
-                
-                raw {
-                   (*builds_this_frame)++;
-                }
-            }
-        }
+    // Draw Opaque (Solid blocks)
+    fn draw_opaque(self, chunks: Chunk*, num_chunks: int, builds_in_frame: int*, max_builds: int, player_cx: int, player_cz: int) {
+        if (self.x == -9999) return;
         
-        // Draw entire chunk with single draw call!
-        let gx_base = self.x * 16;
-        let gz_base = self.z * 16;
-        
-        if self.mesh_built != 0 {
+        // Draw Block Mesh (mesh building is now handled by the main loop's throttled update)
+        if (self.mesh_built) {
+            let gx_base = (float)(self.x * 16);
+            let gz_base = (float)(self.z * 16);
+            
             let offset = rl::Vector3{
-                x: (float)gx_base,
+                x: gx_base,
                 y: 0.0,
-                z: (float)gz_base
-            };
-            rl::DrawModel(self.chunk_model, offset, 1.0, rl::WHITE);
-        }
-        
-        // Draw plants
-        if self.plant_mesh_built != 0 {
-            let offset_plants = rl::Vector3{
-                x: (float)gx_base,
-                y: 0.0,
-                z: (float)gz_base
+                z: gz_base
             };
             
-            rl::DrawModel(self.plant_model, offset_plants, 1.0, rl::WHITE);
+            rl::DrawModel(self.chunk_model, offset, 1.0, rl::WHITE);
+        }
+    }
+
+    // Draw Transparent (Water, Plants, Glass)
+    fn draw_transparent(self, chunks: Chunk*, num_chunks: int, player_cx: int, player_cz: int) {
+        if (self.x == -9999) return;
+        
+        // Base transparency loop
+        let gx_base = (float)(self.x * 16);
+        let gz_base = (float)(self.z * 16);
+        let offset = rl::Vector3{ x: gx_base, y: 0.0, z: gz_base };
+
+        // 1. Water
+        if (self.water_mesh_built) {
+            rl::DrawModel(self.water_model, offset, 1.0f, rl::WHITE);
         }
         
-        // Draw grass decorations (LOD: strict 16 block distance)
-        let dx = (float)gx_base + 8.0 - px; // Check from center of chunk
-        let dz = (float)gz_base + 8.0 - pz;
+        // 2. Plants (Alpha Cutout)
+        if self.plant_mesh_built != 0 {
+            rl::DrawModel(self.plant_model, offset, 1.0, rl::WHITE);
+        }
+        
+        // 3. Grass Decorations (LOD)
+        // Check distance to center of chunk
+        let dx = (float)player_cx - (gx_base + 8.0);
+        let dz = (float)player_cz - (gz_base + 8.0);
         let dist_sq = dx * dx + dz * dz;
         
-        // 16 blocks radius = 256 squared. 
-        // Let's rely on chunk distance: if distance is small enough.
-        // User asked for "16 blocks around player". 
-        // 16 blocks is 1 chunk. So basically STRICTLY current chunk? 
-        // Or within 16 units? 
-        // Let's use 24.0 radius (1.5 chunks) to be safe and avoid popping at edge
-        // 24.0 * 24.0 = 576.0
-        if dist_sq < 576.0 {
+        if dist_sq < 576.0 { // 24.0 ^ 2
              if self.grass_deco_built == 0 && self.mesh_built != 0 {
                 build_grass_decorations(self, chunks, num_chunks);
             }
             
             if self.grass_deco_built != 0 {
-                let offset_grass = rl::Vector3{
-                    x: (float)gx_base,
-                    y: 0.0,
-                    z: (float)gz_base
-                };
-                rl::DrawModel(self.grass_deco_model, offset_grass, 1.0, rl::WHITE);
+                rl::DrawModel(self.grass_deco_model, offset, 1.0, rl::WHITE);
             }
+        }
+    }
+}
+
+// --- Plant Management & Random Ticks ---
+
+fn remove_plant_at(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) {
+    raw {
+        if (y < 0 || y >= CHUNK_HEIGHT) return;
+
+        int cx = (int)floor((float)x / 16.0);
+        int cz = (int)floor((float)z / 16.0);
+        int idx = get_chunk_index(cx, cz);
+        
+        // Check if chunk is loaded and matches coordinates
+        if (chunks[idx].x != cx || chunks[idx].z != cz) return;
+        
+        Chunk* c = &chunks[idx];
+        
+        int lx = ((x % 16) + 16) % 16;
+        int lz = ((z % 16) + 16) % 16;
+        
+        for (int i = 0; i < c->plant_count; i++) {
+            int px = (int)(c->plants[i].x);
+            int py = (int)(c->plants[i].y);
+            int pz = (int)(c->plants[i].z);
+            
+            if (px == lx && py == y && pz == lz) {
+                // Found it! Remove by swapping with last
+                c->plants[i] = c->plants[c->plant_count - 1];
+                c->plant_count = c->plant_count - 1;
+                c->mesh_dirty = 1; 
+                return;
+            }
+        }
+    }
+}
+
+fn tick_chunk(c: Chunk*, chunks: Chunk*, num_chunks: int) {
+    raw {
+        // Random Ticks (3 per chunk per call/frame)
+        for (int i = 0; i < 3; i++) {
+            int lx = rand() % 16;
+            int ly = rand() % CHUNK_HEIGHT;
+            int lz = rand() % 16;
+            
+            int btype = c->blocks[lx][ly][lz];
+            
+            // Grass Growth: Dirt -> Grass
+            if (btype == BLOCK_DIRT) {
+                int above_y = ly + 1;
+                if (above_y < CHUNK_HEIGHT) {
+                    int above_type = c->blocks[lx][above_y][lz];
+                    if (IS_TRANSPARENT(above_type)) {
+                        c->blocks[lx][ly][lz] = BLOCK_GRASS;
+                        c->mesh_dirty = 1;
+                    }
+                } else {
+                    c->blocks[lx][ly][lz] = BLOCK_GRASS;
+                    c->mesh_dirty = 1;
+                }
+            }
+            // Grass Death: Grass -> Dirt
+            else if (btype == BLOCK_GRASS) {
+                int above_y = ly + 1;
+                if (above_y < CHUNK_HEIGHT) {
+                    int above_type = c->blocks[lx][above_y][lz];
+                    if (!IS_TRANSPARENT(above_type)) {
+                        c->blocks[lx][ly][lz] = BLOCK_DIRT;
+                        c->mesh_dirty = 1;
+                    }
+                }
+            }
+        }
         }
     }
 }

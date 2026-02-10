@@ -12,10 +12,10 @@ y: int;
 }
 
 // Aumentamos un poco el tamaño y usamos lógica circular
-def MAX_LIGHT_QUEUE = 32000;
+def MAX_LIGHT_QUEUE = 131072;
 
 struct LightQueue {
-    nodes: LightNode[32000]; // Debe coincidir con MAX_LIGHT_QUEUE
+    nodes: LightNode[131072]; // Debe coincidir con MAX_LIGHT_QUEUE
     head: int;
 tail: int;
 }

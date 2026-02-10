@@ -5,7 +5,7 @@ fn build_grass_decorations(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         // Count grass blocks with air above
         int grass_count = 0;
         for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 31; y++) { // y < 31 to check y+1
+            for (int y = 0; y < CHUNK_HEIGHT - 1; y++) { // check y+1
                 for (int z = 0; z < 16; z++) {
                     if (c->blocks[x][y][z] == BLOCK_GRASS) {
                         int above = c->blocks[x][y + 1][z];
@@ -22,10 +22,10 @@ fn build_grass_decorations(c: Chunk*, chunks: Chunk*, num_chunks: int) {
             return;
         }
         
-        // Each grass block gets 16 decorations (4x4 grid)
+        // Each grass block gets 25 decorations (5x5 grid)
         // Each decoration is 2 crossed quads (4 quads total)
         // Each quad = 6 vertices
-        int num_decorations = grass_count * 16;
+        int num_decorations = grass_count * 25;
         int vertex_count = num_decorations * 4 * 6; // 4 quads, 6 verts each
         
         float* vertices = (float*)malloc(vertex_count * 3 * sizeof(float));
@@ -40,7 +40,7 @@ fn build_grass_decorations(c: Chunk*, chunks: Chunk*, num_chunks: int) {
         #define PRAND_FLOAT(seed) (((float)((seed) & 0xFFFF)) / 65535.0f)
         
         for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 31; y++) {
+            for (int y = 0; y < CHUNK_HEIGHT - 1; y++) {
                 for (int z = 0; z < 16; z++) {
                     if (c->blocks[x][y][z] != BLOCK_GRASS) continue;
                     
@@ -55,16 +55,16 @@ fn build_grass_decorations(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                     int light_r = ((light_val & 0xF) * 17);        // Block Light
                     int light_g = (((light_val >> 4) & 0xF) * 17); // Sky Light
                     
-                    // Generate 16 decorations per grass block (4x4 grid)
+                    // Generate 25 decorations per grass block (5x5 grid)
                     // This ensures even distribution across the block surface
-                    for (int gx = 0; gx < 4; gx++) {
-                        for (int gz = 0; gz < 4; gz++) {
-                            int deco_index = gx * 4 + gz;
+                    for (int gx = 0; gx < 5; gx++) {
+                        for (int gz = 0; gz < 5; gz++) {
+                            int deco_index = gx * 5 + gz;
                             int seed = PRNG(seed_base + deco_index * 12345);
                             
-                            // Grid cell center
-                            float cell_center_x = (float)gx * 0.25f + 0.125f; // 0.125, 0.375, 0.625, 0.875
-                            float cell_center_z = (float)gz * 0.25f + 0.125f;
+                            // Grid cell center (5x5 = 0.2 wide cells)
+                            float cell_center_x = (float)gx * 0.2f + 0.1f;
+                            float cell_center_z = (float)gz * 0.2f + 0.1f;
                             
                             // Jitter within cell (-0.1 to +0.1)
                             float jitter_x = PRAND_FLOAT(PRNG(seed)) * 0.2f - 0.1f;
@@ -77,13 +77,14 @@ fn build_grass_decorations(c: Chunk*, chunks: Chunk*, num_chunks: int) {
                             // Larger size
                             // Height 0.25 to 0.35 (was 0.15-0.25)
                             float height = 0.15f + PRAND_FLOAT(PRNG(PRNG(PRNG(seed)))) * 0.1f;
-                            float width = 0.10f; // Width 0.12 (was 0.08)
+                            float width = 0.04f; // Narrower blades
                             
                             // Texture coords (Use Grass Top: col 1, row 0)
-                            float u_min = 0.25f;
-                            float v_min = 0.0f;
-                            float u_max = 0.5f;
-                            float v_max = 0.5f;
+                            // Atlas is 4 cols x 3 rows: 0.25 wide, 0.333 tall
+                            float u_min = 0.26f;  // Slight inset to avoid bleeding
+                            float v_min = 0.01f;
+                            float u_max = 0.49f;
+                            float v_max = 0.32f;  // Row 0 ends at 0.333
                             
                             // 2 crossed quads (4 total quads)
                             // Quad 1: North-South aligned

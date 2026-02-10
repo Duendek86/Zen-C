@@ -10,6 +10,7 @@ def BLOCK_LOG = 5;
 def BLOCK_LEAVES = 6;
 def BLOCK_GOLD_ORE = 7;
 def BLOCK_WATER = 8;
+def BLOCK_SAND = 9;   // New Sand Block
 def BLOCK_TORCH = 10;   // Floor/Up
 def BLOCK_TORCH_N = 11; // Wall North (Z+)
 def BLOCK_TORCH_S = 12; // Wall South (Z-)

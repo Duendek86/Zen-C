@@ -6,7 +6,7 @@ import "blocks.zc";
 
 // Helper to set block in raw ChunkData
 fn set_block_raw(data: ChunkData*, x: int, y: int, z: int, type: int) {
-    if x >= 0 && x < 16 && y >= 0 && y < 32 && z >= 0 && z < 16 {
+    if x >= 0 && x < 16 && y >= 0 && y < CHUNK_HEIGHT && z >= 0 && z < 16 {
         data.blocks[x][y][z] = type;
         if type == BLOCK_AIR {
             data.light[x][y][z] = 15; // Assume skylight for simplicity in air
@@ -16,7 +16,7 @@ fn set_block_raw(data: ChunkData*, x: int, y: int, z: int, type: int) {
     }
 }
 
-raw {
+    raw {
     // Define constants for C-scope
     #define TITLE_BLOCK_AIR 0
     #define TITLE_BLOCK_DIRT 1
@@ -27,30 +27,106 @@ raw {
     #define TITLE_BLOCK_LEAVES 6
     #define TITLE_BLOCK_GOLD_ORE 7
 
-    // Forward declare helper
+    // Simple pseudo-random noise
+    float noise2(int x, int z) {
+        int n = x + z * 57;
+        n = (n << 13) ^ n;
+        return (1.0 - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0);
+    }
+
+    float smooth_noise(float x, float z) {
+        int ix = (int)floor(x);
+        int iz = (int)floor(z);
+        float fx = x - ix;
+        float fz = z - iz;
+        
+        float v1 = noise2(ix, iz);
+        float v2 = noise2(ix+1, iz);
+        float v3 = noise2(ix, iz+1);
+        float v4 = noise2(ix+1, iz+1);
+        
+        float i1 = v1*(1-fx) + v2*fx;
+        float i2 = v3*(1-fx) + v4*fx;
+        
+        return i1*(1-fz) + i2*fz;
+    }
+
     void draw_letter(ChunkData* data, int start_x, int y_base, int z_pos, char letter, int block_type);
     
     void generate_title_chunk(ChunkData* data, int x, int z) {
-        // Flat fancy floor at y=5
+        // Procedural Terrain Generation
         for(int cx=0; cx<16; cx++) {
             for(int cz=0; cz<16; cz++) {
-                 // Air above
-                 for(int cy=6; cy<32; cy++) {
-                     data->blocks[cx][cy][cz] = TITLE_BLOCK_AIR;
-                     data->light[cx][cy][cz] = 15;
-                 }
-                 // Checkerboard floor
-                 if ((cx + cz) % 2 == 0) {
-                     data->blocks[cx][5][cz] = TITLE_BLOCK_GRASS;
-                 } else {
-                     data->blocks[cx][5][cz] = TITLE_BLOCK_LEAVES; // Fancy
-                 }
-                 data->light[cx][5][cz] = 15;
+                 // Global coordinates
+                 int gx = x * 16 + cx;
+                 int gz = z * 16 + cz;
                  
-                 // Dirt below
-                 for(int cy=0; cy<5; cy++) {
-                     data->blocks[cx][cy][cz] = TITLE_BLOCK_DIRT;
-                     data->light[cx][cy][cz] = 0;
+                 // Noise for height
+                 float n = smooth_noise(gx * 0.1, gz * 0.1);
+                 int h = 4 + (int)(n * 4.0); // Height 2 to 6?
+                 if (h < 2) h = 2;
+                 
+                 // Water Level at y=3
+                 
+                 for(int cy=0; cy<CHUNK_HEIGHT; cy++) {
+                     int type = TITLE_BLOCK_AIR;
+                     
+                     if (cy <= h) {
+                         if (cy < 3) {
+                             type = TITLE_BLOCK_STONE; // Base
+                         } else if (cy == h) {
+                             // Surface
+                             if (h <= 3) type = 9; // SAND (using raw ID 9 as TITLE_BLOCK_SAND not defined?)
+                             // Wait, blocks.zc defines BLOCK_SAND = 9.
+                             // I should define TITLE_BLOCK_SAND 9 in raw block
+                             else type = TITLE_BLOCK_GRASS;
+                         } else {
+                             type = TITLE_BLOCK_DIRT;
+                         }
+                     }
+                     else if (cy <= 3) {
+                         type = 8; // BLOCK_WATER
+                     }
+                     
+                     data->blocks[cx][cy][cz] = type;
+                     
+                     if (type == TITLE_BLOCK_AIR || type == 8 || type == 6 || type == 4) { // Transparent
+                         data->light[cx][cy][cz] = 15;
+                     } else {
+                         data->light[cx][cy][cz] = 0;
+                     }
+                 }
+                 
+                 // Trees?
+                 if (data->blocks[cx][h][cz] == TITLE_BLOCK_GRASS && cx > 1 && cx < 14 && cz > 1 && cz < 14) {
+                     // Random tree
+                     int seed = gx * 123 + gz * 432;
+                     seed = (seed << 13) ^ seed;
+                     if ((seed % 100) < 5) { // 5% chance
+                         // Draw Simple Tree
+                         int th = 4 + (seed % 3);
+                         // Trunk
+                         for(int i=1; i<=th; i++) {
+                             if(h+i < 32) data->blocks[cx][h+i][cz] = TITLE_BLOCK_LOG;
+                         }
+                         // Leaves
+                         int lh = h + th;
+                         for(int lx=-2; lx<=2; lx++) {
+                             for(int lz=-2; lz<=2; lz++) {
+                                 for(int ly=0; ly<2; ly++) {
+                                     if (abs(lx)+abs(lz) <= 2) { // Diamond shape
+                                          int tx = cx+lx;
+                                          int tz = cz+lz;
+                                          int ty = lh+ly - 1;
+                                          if(tx>=0 && tx<16 && tz>=0 && tz<16 && ty<32) {
+                                              if(data->blocks[tx][ty][tz] == TITLE_BLOCK_AIR)
+                                                  data->blocks[tx][ty][tz] = TITLE_BLOCK_LEAVES;
+                                          }
+                                     }
+                                 }
+                             }
+                         }
+                     }
                  }
             }
         }
@@ -71,13 +147,6 @@ raw {
         }
         
         // "CRAFT" (Log/Stone) at Bottom (y=9)
-        // Spanning Chunk -1, 0, 1?
-        // Width 25. Center at Chunk 0 center (x=8).
-        // Start x = 8 - 12 = -4.
-        // Chunk -1: x offset -4 relative to global? 
-        // Chunk 0 is 0..15. Chunk -1 is -16..-1.
-        // x=-4 is index 12 in Chunk -1.
-        
         int y_craft = 9;
         int b_craft = TITLE_BLOCK_LOG;
         
@@ -86,37 +155,14 @@ raw {
             draw_letter(data, 12, y_craft, z_pos, 'C', b_craft);
         }
         
-        // R: Start 1. (cx=1 in Chunk 0)
-        // A: Start 6.
-        // F: Start 11.
         if (x == 0 && z == 0) {
              draw_letter(data, 1, y_craft, z_pos, 'R', b_craft);
              draw_letter(data, 6, y_craft, z_pos, 'A', b_craft);
              draw_letter(data, 11, y_craft, z_pos, 'F', b_craft);
         }
         
-        // T: Start 16. (cx=0 in Chunk 1)
         if (x == 1 && z == 0) {
             draw_letter(data, 0, y_craft, z_pos, 'T', b_craft);
-        }
-        
-        // Floating Particles (Random Gold/Leaves)
-        if (z == 0 && (x >= -1 && x <= 1)) {
-            // Simple deterministic RNG
-            int seed = x * 123 + z * 456;
-            for(int i=0; i<5; i++) {
-                seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-                int rx = seed % 16;
-                seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-                int ry = 6 + (seed % 20);
-                seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-                int rz = 2 + (seed % 12); // around the sign
-                
-                if (data->blocks[rx][ry][rz] == TITLE_BLOCK_AIR) {
-                    data->blocks[rx][ry][rz] = (seed % 2 == 0) ? TITLE_BLOCK_LEAVES : TITLE_BLOCK_GOLD_ORE;
-                    data->light[rx][ry][rz] = 13; // Glow?
-                }
-            }
         }
     }
     

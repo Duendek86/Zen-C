@@ -7,17 +7,24 @@ in vec3 fragNormal;
 out vec4 finalColor;
 
 uniform sampler2D texture0;
-uniform vec4 colDiffuse;
 
 // Dynamic Lighting Uniforms
 uniform vec3 uLightDir;
 uniform vec3 uLightCol;
 uniform vec3 uAmbient;
+uniform vec3 viewPos;
+uniform float time;
+// removed colDiffuse to avoid uninitialized uniform issues
+
+in vec3 fragPosition;
 
 void main()
 {
     vec4 texelColor = texture(texture0, fragTexCoord);
     if (texelColor.a < 0.5) discard;
+    
+    vec3 texColor = texelColor.rgb; // Initialize defaults
+    float alpha = texelColor.a;
 
     // --- 1. PROCESADO DE LUZ ---
     
@@ -71,21 +78,61 @@ void main()
     // Evitar negro absoluto (siempre hay un mínimo de luz visible)
     combinedLight = max(combinedLight, vec3(0.02));
 
-    // --- 5.5. WATER TINT ---
-    // Water blocks are flagged with fragColor.b = 1.0 (255)
-    // Apply blue tint and transparency to water blocks
-    vec3 texColor = texelColor.rgb;
-    float alpha = texelColor.a;
+    // --- 5.5. WATER TINT & REFLECTION ---
+    // Water blocks are flagged with fragColor.b > 0.9
     
-    // Water detection using Blue channel flag
+    vec3 viewDir = normalize(viewPos - fragPosition);
+
     if (fragColor.b > 0.9) {
-        // This is water - use solid blue color (no texture) and make semi-transparent
-        texColor = vec3(0.2, 0.5, 0.9); // Cyan-blue color
-        alpha = 0.6; // Semi-transparent
+        // 1. DISTORTION (Fake Waves)
+        // Perturb the normal slightly based on position and time
+        // This makes specular and reflection dance
+        vec3 distortedNormal = fragNormal;
+        float waveSpeed = 2.0;
+        float waveScale = 0.5;
+        
+        // Simple noise-like function using sin/cos
+        float n_x = sin(fragPosition.x * 2.0 + time * waveSpeed) * 0.1;
+        float n_z = cos(fragPosition.z * 2.0 + time * waveSpeed * 0.8) * 0.1;
+        
+        distortedNormal.x += n_x;
+        distortedNormal.z += n_z;
+        distortedNormal = normalize(distortedNormal);
+        
+        // Re-calculate NdotL with distorted normal for dynamic highlights
+        float distNdotL = max(dot(distortedNormal, lightDir), 0.0);
+        
+        // 2. REFLECTION (Fresnel)
+        // Everything reflects the sky for now.
+        // Sky Color is roughly skyBaseColor (but brighter).
+        // Let's use uLightCol/uAmbient blend as "Sky Env Map".
+        vec3 skyReflectColor = mix(uAmbient, uLightCol, 0.5);
+        if (skyReflectColor.g > 0.5) skyReflectColor = vec3(0.6, 0.8, 1.0); // Daylight blue
+        else skyReflectColor = vec3(0.05, 0.05, 0.1); // Night dark
+        
+        // Fresnel Schlick approximation
+        float fresnel = pow(1.0 - max(dot(viewDir, distortedNormal), 0.0), 3.0);
+        fresnel = clamp(fresnel, 0.0, 1.0);
+        
+        // Base Water Color (Deep Blue)
+        vec3 waterBase = vec3(0.1, 0.3, 0.8);
+        
+        // Mix Base and Sky based on Fresnel
+        // High angle (looking down) -> See water/ground (fresnel low)
+        // Low angle (looking grazing) -> See sky reflection (fresnel high)
+        
+        texColor = mix(waterBase, skyReflectColor, fresnel * 0.6);
+        
+        // Add Specular Highlight (Sun)
+        vec3 reflectDir = reflect(-lightDir, distortedNormal);
+        float spec = pow(max(dot(viewDir, reflectDir), 0.0), 32.0);
+        texColor += uLightCol * spec * 0.5; // Sun glint
+        
+        alpha = 0.7; // Slightly more opaque to see color, but still transparent
     }
 
     // --- 6. APLICAR COLOR FINAL ---
-    vec3 finalRGB = texColor * colDiffuse.rgb * combinedLight;
+    vec3 finalRGB = texColor * combinedLight;
     
     // NO gamma correction - linear output for more natural look
 

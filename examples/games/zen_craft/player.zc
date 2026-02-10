@@ -161,8 +161,8 @@ impl Player {
             }
 
             // Check World Floor (Void Safety)
-            if self.y < -10.0 {
-                self.y = 20.0;
+            if self.y < -30.0 {
+                self.y = (float)CHUNK_HEIGHT + 20.0;
                 self.vy = 0.0;
             }
         } else {

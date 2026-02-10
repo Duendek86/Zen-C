@@ -15,14 +15,18 @@ import "player.zc";
 import "persistence.zc";
 import "title_generator.zc";
 import "zibi.zc";
+import "grass_deco.zc";
 
 def MAX_ZIBIS = 5;
+def SAVE_DIR = "world_forests";
+def DRAW_DISTANCE = 3;
 
 def STATE_TITLE = 0;
 def STATE_LOADING = 1;
 def STATE_GAME = 2;
 
 fn main() {
+    rl::SetTraceLogLevel(rl::LOG_WARNING);
     rl::InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, TITLE);
     rl::SetWindowState(rl::FLAG_WINDOW_RESIZABLE);
     defer { rl::CloseWindow(); }
@@ -37,7 +41,7 @@ fn main() {
     let current_state = STATE_TITLE;
     
     // --- TITLE STATE SETUP ---
-    set_game_world_dir("titleworld");
+    set_game_world_dir("titleworld_forests");
     let title_cam = rl::Camera3D{
         position: rl::Vector3{x: 8.0, y: 15.0, z: 25.0}, // Positive Z looking back at 0
         target: rl::Vector3{x: 8.0, y: 12.0, z: 0.0},
@@ -70,6 +74,8 @@ fn main() {
 
     while !rl::WindowShouldClose() {
         let dt: float = rl::GetFrameTime();
+        // Clamp dt to prevent physics explosion during lag spikes (e.g., chunk loading)
+        if dt > 0.1 { dt = 0.1; }
         
         // --- TITLE SCREEN LOOP ---
         if current_state == STATE_TITLE {
@@ -86,7 +92,7 @@ fn main() {
                 }
                 
                 // Switch World
-                set_game_world_dir("world");
+                set_game_world_dir(SAVE_DIR);
             }
 
             // Chunk Loading for Title (We need to load the sign chunks)
@@ -103,18 +109,34 @@ fn main() {
             }
             poll_async_results(&chunks[0], MAX_CHUNKS);
 
-            // Draw
             rl::BeginDrawing();
             rl::ClearBackground(rl::Color{r: 20, g: 20, b: 30, a: 255}); // Dark blue space/night
 
+            // Camera Orbit Animation
+            let time = (float)rl::GetTime();
+            let radius = 22.0;
+            let speed = 0.2;
+            title_cam.position.x = 8.0 + (float)sin(time * speed) * radius;
+            title_cam.position.z = (float)cos(time * speed) * radius;
+            title_cam.position.y = 14.0 + (float)sin(time * 0.1) * 2.0;
+            title_cam.target = rl::Vector3{x: 8.0, y: 12.0, z: 0.0};
+            
             rl::BeginMode3D(title_cam);
             raw { rlDisableBackfaceCulling(); }
             
             // Draw Title Chunks
+             // Draw Title Chunks
+            let title_builds = 0;
              for i in 0..MAX_CHUNKS {
                 if chunks[i].x != -9999 {
                     // Title chunks don't need throttling really, there are few
-                    chunks[i].draw(&chunks[0], MAX_CHUNKS, &i, 100, 8.0, 25.0); 
+                    chunks[i].draw_opaque(&chunks[0], MAX_CHUNKS, &title_builds, 100, 8, 25); 
+                }
+            }
+            // Transparent pass for Title
+            for i in 0..MAX_CHUNKS {
+                if chunks[i].x != -9999 {
+                    chunks[i].draw_transparent(&chunks[0], MAX_CHUNKS, 8, 25);
                 }
             }
             rl::EndMode3D();
@@ -155,7 +177,7 @@ fn main() {
                         int idx = get_chunk_index(cx, cz);
                         
                         if(chunks[idx].x != cx || chunks[idx].z != cz) {
-                            chunks[idx] = load_chunk_sync(cx, cz);
+                            load_chunk_into(&chunks[idx], cx, cz);
                             propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
                             
                             // Re-propagate light in adjacent neighbors to fix boundary seams
@@ -179,8 +201,8 @@ fn main() {
                 
                 // Find safe spawn if new game
                 if(!loaded_save) {
-                    for(int h = 0; h < 32; h++) {
-                        int y = 31 - h;
+                    for(int h = 0; h < CHUNK_HEIGHT; h++) {
+                        int y = (CHUNK_HEIGHT - 1) - h;
                         int blk = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y, (int)start_z);
                         if(blk != BLOCK_AIR && blk != 10) { // Not air, not tallgrass
                             int above1 = get_block(&chunks[0], MAX_CHUNKS, (int)start_x, y + 1, (int)start_z);
@@ -244,10 +266,31 @@ fn main() {
                 p.pitch = spawn_pitch;
                 
                 // Initialize Zibis around spawn
+                // Initialize Zibis around spawn (Avoiding Water)
                 for i in 0..MAX_ZIBIS {
-                    let ox = spawn_x + (float)(i * 5 - 10);
-                    let oz = spawn_z + (float)(i * 5 - 10);
-                    zibis[i] = Zibi::new(ox, spawn_y + 10.0, oz);
+                    let ox = spawn_x + (float)(i * 8 - 20); // Spread them out more
+                    let oz = spawn_z + (float)(i * 8 - 20);
+                    
+                    // Find ground height
+                    let ground_y = 31.0;
+                    for y in 0..32 {
+                        let ry = 31 - y;
+                        let b = get_block(&chunks[0], MAX_CHUNKS, (int)ox, ry, (int)oz);
+                        if b != BLOCK_AIR && b != BLOCK_TALLGRASS {
+                            ground_y = (float)ry;
+                            break;
+                        }
+                    }
+                    
+                    let surface_block = get_block(&chunks[0], MAX_CHUNKS, (int)ox, (int)ground_y, (int)oz);
+                    if (surface_block != BLOCK_WATER) {
+                        zibis[i] = Zibi::new(ox, ground_y + 2.0, oz);
+                    } else {
+                        // Skip or move? For now just spawn them higher and hope gravity helps if they are on shore
+                        // Or just don't spawn. Let's try to find a nearby non-water spot? 
+                        // Simpler: Just spawn them at player position if water.
+                        zibis[i] = Zibi::new(spawn_x, spawn_y + 2.0, spawn_z);
+                    }
                 }
                 
                 current_state = STATE_GAME;
@@ -280,54 +323,88 @@ fn main() {
         else {
              // --- GAME LOOP ---
              
-             // --- CHUNK UPDATE LOGIC ---
+             // --- CHUNK UPDATE LOGIC (ASYNC) ---
             let pcx = (int)floor(p.x / 16.0);
             let pcz = (int)floor(p.z / 16.0);
             
-            let range_limit = RENDER_DISTANCE + 1;
-            for dx in -RENDER_DISTANCE..range_limit {
-                 for dz in -RENDER_DISTANCE..range_limit {
-                     let cx = pcx + dx;
-                     let cz = pcz + dz;
-                     let idx = get_chunk_index(cx, cz);
-                     
-                     if chunks[idx].x != cx || chunks[idx].z != cz {
-                         if chunks[idx].x != -9999 {
-                             request_save_async(&chunks[idx]);
-                         }
-                         
-                         // Load synchronously (try disk first, generate if not found)
-                         chunks[idx] = load_chunk_sync(cx, cz);
-                         
-                         // ALWAYS recalculate lighting after load to fix old save format
-                         // This initializes proper dual-channel light values
-                         recalculate_chunk_lighting(&chunks[idx], &chunks[0], MAX_CHUNKS);
-                         
-                         // Propagate light after recalculation
-                         propagate_light_in_chunk(&chunks[idx], &chunks[0], MAX_CHUNKS);
-                         
-                         // Re-propagate light in adjacent neighbors to fix boundary seams
-                         // This ensures that when this chunk loads, its neighbors receive light from it
-                         let neighbor_offsets: int[8] = [-1, 0, 1, 0, 0, -1, 0, 1]; // 4 neighbors: -X, +X, -Z, +Z
-                         for ni in 0..4 {
-                             let ncx = cx + neighbor_offsets[ni * 2];
-                             let ncz = cz + neighbor_offsets[ni * 2 + 1];
-                             let nidx = get_chunk_index(ncx, ncz);
-                             
-                             // Only re-propagate if neighbor exists and is the correct chunk
-                             if chunks[nidx].x == ncx && chunks[nidx].z == ncz {
-                                 propagate_light_in_chunk(&chunks[nidx], &chunks[0], MAX_CHUNKS);
-                                 chunks[nidx].mesh_dirty = 1;
-                             }
-                         }
-                         
-                         // Force mesh rebuild with new light data
-                         chunks[idx].mesh_dirty = 1;
-                     }
-                 }
+            // Request loading for any chunks in render distance that aren't loaded
+            // Use spiral order: closest chunks first for better player experience
+            let requests_this_frame = 0;
+            def MAX_REQUESTS_PER_FRAME = 4;
+            
+            // Spiral iteration: distance 0, then 1, then 2... up to RENDER_DISTANCE
+            for dist in 0..(RENDER_DISTANCE + 1) {
+                if requests_this_frame >= MAX_REQUESTS_PER_FRAME { break; }
+                
+                // For distance 0, just check the center
+                if dist == 0 {
+                    let idx = get_chunk_index(pcx, pcz);
+                    if chunks[idx].x != pcx || chunks[idx].z != pcz {
+                        if !is_chunk_pending(pcx, pcz) {
+                            if chunks[idx].x != -9999 {
+                                request_save_async(&chunks[idx]);
+                            }
+                            chunks[idx].x = -9999; // Mark as loading
+                            request_load_async(idx, pcx, pcz);
+                            requests_this_frame = requests_this_frame + 1;
+                        }
+                    }
+                    continue;
+                }
+                
+                // For distance > 0, iterate the perimeter of the square
+                for side in 0..4 {
+                    for step in 0..(dist * 2) {
+                        if requests_this_frame >= MAX_REQUESTS_PER_FRAME { break; }
+                        
+                        let dx = 0;
+                        let dz = 0;
+                        // Side 0: top edge (z = -dist, x goes -dist+step to +dist)
+                        // Side 1: right edge (x = +dist, z goes -dist+step to +dist)
+                        // Side 2: bottom edge (z = +dist, x goes +dist-step to -dist)
+                        // Side 3: left edge (x = -dist, z goes +dist-step to -dist)
+                        if side == 0 { dx = -dist + step; dz = -dist; }
+                        else if side == 1 { dx = dist; dz = -dist + step; }
+                        else if side == 2 { dx = dist - step; dz = dist; }
+                        else { dx = -dist; dz = dist - step; }
+                        
+                        let cx = pcx + dx;
+                        let cz = pcz + dz;
+                        let idx = get_chunk_index(cx, cz);
+                        
+                        if chunks[idx].x != cx || chunks[idx].z != cz {
+                            if !is_chunk_pending(cx, cz) {
+                                // Save old chunk occupying this slot if valid
+                                if chunks[idx].x != -9999 {
+                                    request_save_async(&chunks[idx]);
+                                }
+                                chunks[idx].x = -9999; // Mark slot as loading
+                                request_load_async(idx, cx, cz);
+                                requests_this_frame = requests_this_frame + 1;
+                            }
+                        }
+                    }
+                }
             }
             
-            // No longer need poll_async_results for game chunks (only title screen uses async)
+            // Poll completed async loads (applies data, recalculates lighting, marks dirty)
+            poll_async_results(&chunks[0], MAX_CHUNKS);
+            
+             // --- MESH UPDATE LOOP ---
+            // Throttle mesh builds to avoid GPU upload lag spikes
+            let mesh_builds_this_frame = 0;
+            def MAX_MESH_BUILDS_PER_FRAME = 2;
+            
+            for i in 0..MAX_CHUNKS {
+                if mesh_builds_this_frame >= MAX_MESH_BUILDS_PER_FRAME { break; }
+                if chunks[i].x != -9999 && chunks[i].mesh_dirty != 0 {
+                    build_chunk_mesh(&chunks[i], &chunks[0], MAX_CHUNKS);
+                    build_plant_mesh(&chunks[i], get_tex_grass());
+                    build_grass_decorations(&chunks[i], &chunks[0], MAX_CHUNKS);
+                    chunks[i].mesh_dirty = 0;
+                    mesh_builds_this_frame = mesh_builds_this_frame + 1;
+                }
+            }
             
             (&p).update(&chunks[0], MAX_CHUNKS, dt);
             
@@ -345,7 +422,7 @@ fn main() {
             if rl::IsKeyPressed(rl::KEY_SIX) { selected_block = BLOCK_TORCH; }
             if rl::IsKeyPressed(rl::KEY_SEVEN) { selected_block = BLOCK_WATER; }
     
-            rl::BeginDrawing();
+    
             
             // Configurable cycle duration
             let day_duration = 120.0; // 2 minutes for testing (eventually 1200.0 for 20 mins)
@@ -355,16 +432,22 @@ fn main() {
             // Update lighting uniforms using the new system
             update_day_night_cycle(day_time);
             
-            // Update Wind Time
+            // Update Wind Time & View Pos for Water
             let lighting_shader: rl::Shader = get_shader_lighting();
             let wind_time: float = (float)rl::GetTime();
+            let cam_pos: rl::Vector3 = p.camera.position;
             
             // Pass to C
             raw {
                 /* C access to raylib functions */
-                int loc = GetShaderLocation(lighting_shader, "time");
-                if (loc != -1) {
-                    SetShaderValue(lighting_shader, loc, &wind_time, SHADER_UNIFORM_FLOAT);
+                int loc_time = GetShaderLocation(lighting_shader, "time");
+                if (loc_time != -1) {
+                    SetShaderValue(lighting_shader, loc_time, &wind_time, SHADER_UNIFORM_FLOAT);
+                }
+                
+                int loc_view = GetShaderLocation(lighting_shader, "viewPos");
+                if (loc_view != -1) {
+                    SetShaderValue(lighting_shader, loc_view, &cam_pos, SHADER_UNIFORM_VEC3); 
                 }
             }
             
@@ -409,12 +492,66 @@ fn main() {
             }
     
             let builds_in_frame = 0;
-            let max_builds = 3; // Increased from 1 to reduce chunk pop-in 
+            let max_builds = 1; // Build only 1 chunk per frame for smooth FPS
+    
+            // --- FRUSTUM CULLING SETUP ---
+            // Calculate camera forward vector for culling
+            let cam_fx = p.camera.target.x - p.camera.position.x;
+            let cam_fz = p.camera.target.z - p.camera.position.z;
+            let cam_len = sqrt(cam_fx * cam_fx + cam_fz * cam_fz);
+            if cam_len > 0.001 {
+                cam_fx = cam_fx / cam_len;
+                cam_fz = cam_fz / cam_len;
+            }
+            // Cosine threshold: chunks within ~110° FOV cone (55° half-angle) 
+            // cos(55°) ≈ 0.57, but we use 0.3 to account for chunk size (16 blocks diagonal ~22)
+            def FRUSTUM_COS_THRESHOLD = -0.2;
     
             for i in 0..MAX_CHUNKS {
                 let c: Chunk* = &chunks[i];
                 if c.x != -9999 {
-                    c.draw(&chunks[0], MAX_CHUNKS, &builds_in_frame, max_builds, p.x, p.z);
+                    // Caching Logic: Only draw if within DRAW_DISTANCE
+                    let dist_x = abs(c.x - (int)floor(p.x / 16.0));
+                    let dist_z = abs(c.z - (int)floor(p.z / 16.0));
+                    
+                    if dist_x <= DRAW_DISTANCE && dist_z <= DRAW_DISTANCE {
+                        // Frustum culling: Skip chunks behind camera
+                        // Don't cull distance 0-1 (chunk player is in + immediate neighbors)
+                        if dist_x > 1 || dist_z > 1 {
+                            let chunk_cx = (float)(c.x * 16 + 8) - p.camera.position.x;
+                            let chunk_cz = (float)(c.z * 16 + 8) - p.camera.position.z;
+                            let chunk_dist = sqrt(chunk_cx * chunk_cx + chunk_cz * chunk_cz);
+                            if chunk_dist > 0.001 {
+                                let dot = (cam_fx * chunk_cx + cam_fz * chunk_cz) / chunk_dist;
+                                if dot < FRUSTUM_COS_THRESHOLD { continue; }
+                            }
+                        }
+                        c.draw_opaque(&chunks[0], MAX_CHUNKS, &builds_in_frame, max_builds, p.x, p.z);
+                    }
+                }
+            }
+            
+            // Draw Water & Plants (Transparent Pass)
+            // We draw these AFTER all opaque geometry to ensure alpha blending works against the ground.
+            for i in 0..MAX_CHUNKS {
+                let c: Chunk* = &chunks[i];
+                if (c.x != -9999) {
+                    let dist_x = abs(c.x - (int)floor(p.x / 16.0));
+                    let dist_z = abs(c.z - (int)floor(p.z / 16.0));
+                    
+                    if dist_x <= DRAW_DISTANCE && dist_z <= DRAW_DISTANCE {
+                        // Frustum culling (same as opaque)
+                        if dist_x > 1 || dist_z > 1 {
+                            let chunk_cx = (float)(c.x * 16 + 8) - p.camera.position.x;
+                            let chunk_cz = (float)(c.z * 16 + 8) - p.camera.position.z;
+                            let chunk_dist = sqrt(chunk_cx * chunk_cx + chunk_cz * chunk_cz);
+                            if chunk_dist > 0.001 {
+                                let dot = (cam_fx * chunk_cx + cam_fz * chunk_cz) / chunk_dist;
+                                if dot < FRUSTUM_COS_THRESHOLD { continue; }
+                            }
+                        }
+                       c.draw_transparent(&chunks[0], MAX_CHUNKS, (int)p.x, (int)p.z); 
+                    }
                 }
             }
             
@@ -441,6 +578,9 @@ fn main() {
     
                 if rl::IsMouseButtonPressed(rl::MOUSE_BUTTON_LEFT) {
                     set_block(&chunks[0], MAX_CHUNKS, hit.x, hit.y, hit.z, BLOCK_AIR);
+                    
+                    // Remove plant entities above this block
+                    remove_plant_at(&chunks[0], MAX_CHUNKS, hit.x, hit.y + 1, hit.z);
                     
                     // Auto-destroy attached torches and tallgrass
                     // Check block above for floor torches or tallgrass
@@ -475,8 +615,9 @@ fn main() {
                     let idx = get_chunk_index(cx, cz);
                     
                     // Full recalc on this chunk AND neighbors to prevent light bleed
+                    // Full recalc on this chunk AND neighbors to prevent light bleed
                     recalculate_chunk_lighting(&chunks[idx], &chunks[0], MAX_CHUNKS);
-                    build_chunk_mesh(&chunks[idx], &chunks[0], MAX_CHUNKS); // Rebuild immediately
+                    chunks[idx].mesh_dirty = 1;
                     
                     // Also recalculate neighbor chunks lighting
                     let idx_xm = get_chunk_index(cx - 1, cz);
@@ -486,19 +627,19 @@ fn main() {
                     
                     if chunks[idx_xm].x == cx - 1 && chunks[idx_xm].z == cz {
                         recalculate_chunk_lighting(&chunks[idx_xm], &chunks[0], MAX_CHUNKS);
-                        build_chunk_mesh(&chunks[idx_xm], &chunks[0], MAX_CHUNKS); // Rebuild immediately
+                        chunks[idx_xm].mesh_dirty = 1;
                     }
                     if chunks[idx_xp].x == cx + 1 && chunks[idx_xp].z == cz {
                         recalculate_chunk_lighting(&chunks[idx_xp], &chunks[0], MAX_CHUNKS);
-                        build_chunk_mesh(&chunks[idx_xp], &chunks[0], MAX_CHUNKS); // Rebuild immediately
+                        chunks[idx_xp].mesh_dirty = 1;
                     }
                     if chunks[idx_zm].x == cx && chunks[idx_zm].z == cz - 1 {
                         recalculate_chunk_lighting(&chunks[idx_zm], &chunks[0], MAX_CHUNKS);
-                        build_chunk_mesh(&chunks[idx_zm], &chunks[0], MAX_CHUNKS); // Rebuild immediately
+                        chunks[idx_zm].mesh_dirty = 1;
                     }
                     if chunks[idx_zp].x == cx && chunks[idx_zp].z == cz + 1 {
                         recalculate_chunk_lighting(&chunks[idx_zp], &chunks[0], MAX_CHUNKS);
-                        build_chunk_mesh(&chunks[idx_zp], &chunks[0], MAX_CHUNKS); // Rebuild immediately
+                        chunks[idx_zp].mesh_dirty = 1;
                     }
                 }
                 else if rl::IsMouseButtonPressed(rl::MOUSE_BUTTON_RIGHT) {
@@ -522,6 +663,11 @@ fn main() {
                     if (dist_x*dist_x + dist_y*dist_y + dist_z*dist_z) > min_dist {
                          // Determine block type to place
                          let block_to_place = selected_block;
+                         
+                         // If placing Grass, place Dirt first to simulate growth
+                         if (block_to_place == BLOCK_GRASS) {
+                             block_to_place = BLOCK_DIRT;
+                         }
                          
                          // Special handling for torches - detect which face we clicked
                          if selected_block == BLOCK_TORCH {
