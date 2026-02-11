@@ -4,8 +4,8 @@ import "raylib.h" as rl;
 import "rlgl.h";
 
 // Screen configuration
-def SCREEN_WIDTH = 1920;
-def SCREEN_HEIGHT = 1080;
+def SCREEN_WIDTH = 1024;
+def SCREEN_HEIGHT = 768;
 def TITLE = "Zen Craft";
 
 // Global textures and shaders

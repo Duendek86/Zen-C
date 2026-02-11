@@ -1,6 +1,6 @@
-//> Persistence implementation
-import "raylib.h" as rl;
+import "raylib.h";
 import "chunk.zc";
+import "chunk_mesh.zc";
 
 // Global constants for Async System
 def MAX_PENDING_IO = 64;
@@ -9,6 +9,7 @@ def MAX_PENDING_IO = 64;
 def REQ_NONE = 0;
 def REQ_SAVE = 1;
 def REQ_LOAD = 2;
+def REQ_BUILD_MESH = 3;
 
 // Request Status
 def IO_STATUS_FREE = 0;
@@ -27,11 +28,23 @@ struct ChunkData {
 
 struct IORequest {
     status: int;      // Thread-safe flag
-    type: int;        // REQ_SAVE or REQ_LOAD
+    type: int;        // REQ_SAVE, REQ_LOAD, REQ_BUILD_MESH
     cx: int;
     cz: int;
-    target_idx: int;  // Index in global chunks array (for writeback)
-    data: ChunkData;  // Data buffer (Copy for save, Target for load)
+    target_idx: int;  // Index in global chunks array (for writeback or read)
+    
+    // Data variants
+    data: ChunkData;  // For Save/Load
+    
+    // Mesh Data (Output of REQ_BUILD_MESH)
+    mesh_data: ChunkMeshes;
+    plant_mesh: rl::Mesh;
+}
+
+struct ProfilingStats {
+    mesh_ms: float;
+    gen_ms: float;
+    prop_ms: float;
 }
 
 struct AsyncSystem {
@@ -276,6 +289,8 @@ raw {
         int cz;
         int target_idx;
         ChunkData data;
+        ChunkMeshes mesh_data;
+        Mesh plant_mesh;
     } RawIORequest;
 
     RawIORequest io_queue[256];
@@ -283,6 +298,16 @@ raw {
     
     // Global world directory
     char world_dir[64] = "world";
+    
+    // Global Chunk Pointer (Assigned by init_persistence)
+    // We trust that this pointer is valid as long as system_running is true.
+    Chunk* global_chunks_ptr = NULL;
+    int global_num_chunks = 0;
+    
+    // Profiling Globals
+    volatile double prof_mesh_time = 0.0; // Last mesh build duration
+    volatile double prof_gen_time = 0.0;  // Last chunk gen duration
+    volatile double prof_prop_time = 0.0; // Last frame propagation duration
 
     void set_world_dir(const char* path) {
         if (!DirectoryExists(path)) {
@@ -293,16 +318,11 @@ raw {
     
     // Prototype for generator
     void generate_chunk_data(ChunkData* data, int x, int z);
-    
-    // Forward declare title generator (implemented elsewhere or via callback?)
-    // For simplicity, we can just declare the prototype and implement it in title_generator.zc 
-    // but the linker needs to see it.
-    // Or we switch generator based on world_dir inside `generate_chunk_data`.
-    // Actually, let's inject a generator function pointer? 
-    // Zen-C doesn't support function pointers easily in high level.
-    // Let's modify `generate_chunk_data` to check `world_dir`.
-    
     void generate_title_chunk(ChunkData* data, int x, int z);
+    
+    // Prototype for mesh computer
+    ChunkMeshes compute_chunk_mesh(Chunk* c, Chunk* chunks, int num_chunks);
+    Mesh compute_plant_mesh(Chunk* c);
 
 
     // Worker Function
@@ -319,6 +339,26 @@ raw {
                     // Processor
                     RawIORequest *req = &io_queue[i];
                     
+                    if(req->type == 3) { // REQ_BUILD_MESH
+                        if (global_chunks_ptr != NULL) {
+                            Chunk* c = &global_chunks_ptr[req->target_idx];
+                            // Compute meshes on CPU
+                            // Note: This accesses neighbor chunks via get_block -> get_chunk_index.
+                            // Main thread MUST ensure neighbor chunks are valid and locked!
+                            
+                            double t0 = GetTime();
+                            req->mesh_data = compute_chunk_mesh(c, global_chunks_ptr, global_num_chunks);
+                            req->plant_mesh = compute_plant_mesh(c);
+                            prof_mesh_time = GetTime() - t0;
+                            
+                            req->status = 2; // COMPLETED
+                        } else {
+                            req->status = 3; // FAILED (No global chunks)
+                        }
+                        worked = 1;
+                        continue;
+                    }
+
                     // --- REGION-BASED FILE I/O ---
                     // Region coordinates: each region holds 32x32 chunks
                     int rx = (req->cx >= 0) ? (req->cx / 32) : ((req->cx - 31) / 32);
@@ -419,11 +459,14 @@ raw {
                             req->status = 2; // COMPLETED
                         } else {
                             // Generate new chunk
+                            double t0 = GetTime();
                             if(strstr(world_dir, "titleworld") != NULL) {
                                 generate_title_chunk(&req->data, req->cx, req->cz);
                             } else {
                                 generate_chunk_data(&req->data, req->cx, req->cz);
                             }
+                            prof_gen_time = GetTime() - t0;
+                            
                             // light_calculated is set by generate_chunk_data
                             req->status = 2; // COMPLETED (Generated)
                         }
@@ -451,7 +494,7 @@ fn set_game_world_dir(path: char*) {
     }
 }
 
-fn init_persistence() {
+fn init_persistence(chunks: Chunk*) {
     raw {
         if (!DirectoryExists("world")) {
             MakeDirectory("world");
@@ -462,13 +505,16 @@ fn init_persistence() {
         
         system_running = 1;
 
+        global_chunks_ptr = chunks;
+        global_num_chunks = MAX_CHUNKS;
+
         #if defined(_WIN32)
             CreateThread(NULL, 0, db_worker, NULL, 0, NULL);
         #else
             pthread_create(&db_thread, NULL, db_worker, NULL);
         #endif
     }
-    rl::TraceLog(rl::LOG_INFO, "Async Persistence Initialized");
+    // rl::TraceLog(rl::LOG_INFO, "Async Persistence Initialized");
 }
 
 fn request_save_async(c: Chunk*) {
@@ -530,6 +576,77 @@ fn request_load_async(idx: int, cx: int, cz: int) -> int {
     return result;
 }
 
+// Request Mesh Generation
+// This LOCKS the target chunk and its neighbors
+fn request_mesh_async(idx: int) -> int {
+    let result = 0;
+    
+    // Lock logic: Set locked = 1 for center and neighbors
+    // We must do this on main thread before launching worker
+    // Only lock if not already locked?
+    // Actually, simple lock: we just need to ensure they are NOT UNLOADED.
+    // Unloading happens in main loop when we reuse a chunk slot.
+    // We can add a check in main loop: if (chunk.locked) skip/defer.
+    
+    // We should lock the neighbors we use for occlusion.
+    // Center chunk and 4 immediate neighbors? 
+    // compute_chunk_mesh checks 6 neighbors. 
+    // +X, -X, +Z, -Z, +Y, -Y.
+    // +Y/-Y are inside same chunk (vertical).
+    // So we need locking for +X, -X, +Z, -Z.
+    
+    // Let's implement safe locking in main.zc (or here if we access chunks array).
+    // We access chunks array here via `request_mesh_async(chunks[idx]...)`?
+    // No, `idx` is index.
+    // We need global_chunks_ptr which is visible in C raw block.
+    // But we need to write to `locked` field.
+    
+    // To make it simple: We just set `locked` here.
+    
+    raw {
+        if(global_chunks_ptr == NULL) return 0;
+        
+        Chunk* c = &global_chunks_ptr[idx];
+        if(c->locked) return 0; // Already busy
+        
+        // Find free slot
+        int slot = -1;
+        for(int i=0; i<256; i++) {
+            if(io_queue[i].status == 0) {
+                slot = i;
+                break;
+            }
+        }
+        
+        if(slot != -1) {
+            io_queue[slot].type = 3; // BUILD_MESH
+            io_queue[slot].cx = c->x;
+            io_queue[slot].cz = c->z;
+            io_queue[slot].target_idx = idx;
+            
+            // Lock Center
+            c->locked = 1;
+            
+            // Lock Neighbors
+            int neighbor_offsets[8] = {-1, 0, 1, 0, 0, -1, 0, 1};
+            for(int ni = 0; ni < 4; ni++) {
+                int ncx = c->x + neighbor_offsets[ni * 2];
+                int ncz = c->z + neighbor_offsets[ni * 2 + 1];
+                int nidx = get_chunk_index(ncx, ncz);
+                
+                if(global_chunks_ptr[nidx].x == ncx && global_chunks_ptr[nidx].z == ncz) {
+                     global_chunks_ptr[nidx].locked++; 
+                     // Increment lock so shared neighbors stay locked until all are done
+                }
+            }
+            
+            io_queue[slot].status = 1; // PENDING
+            result = 1;
+        }
+    }
+    return result;
+}
+
 // Check if a chunk load request is already pending for the given coordinates
 fn is_chunk_pending(cx: int, cz: int) -> int {
     let result = 0;
@@ -546,69 +663,132 @@ fn is_chunk_pending(cx: int, cz: int) -> int {
     return result;
 }
 
+
+
+fn get_profiling_stats() -> ProfilingStats {
+    let s: ProfilingStats;
+    raw {
+        s.mesh_ms = (float)(prof_mesh_time * 1000.0);
+        s.gen_ms = (float)(prof_gen_time * 1000.0);
+        s.prop_ms = (float)(prof_prop_time * 1000.0);
+    }
+    return s;
+}
+
+// Get the number of pending requests in the queue
+fn get_pending_req_count() -> int {
+    let count = 0;
+    raw {
+        for(int i=0; i<256; i++) {
+            if(io_queue[i].status == 1) { // PENDING
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
 // Returns 1 if chunk was loaded/generated this frame
 fn poll_async_results(chunks: Chunk*, num_chunks: int) {
     raw {
-        int processed_count = 0;
-        // Process up to 4 completed chunks per frame for faster loading
-        // while still limiting main-thread work
-        int max_per_frame = 4;
+        double start_time = GetTime();
+        double time_budget = 0.001; // 1ms budget (Aggressive)
+        int processed = 0;
+        prof_prop_time = 0.0; // Reset frame counter
         
         for(int i=0; i<256; i++) {
-            if(io_queue[i].status == 2) { // COMPLETED LOAD (or Generated)
-                if(processed_count >= max_per_frame) break;
+             // Check time budget every iteration
+             double current_time = GetTime();
+             if ((current_time - start_time) > time_budget && processed > 0) {
+                 break;
+             }
 
+             
+            if(io_queue[i].status == 2) { // COMPLETED
                 int idx = io_queue[i].target_idx;
-                if(idx >= 0 && idx < num_chunks) {
-                    // Apply Data
-                    chunks[idx].x = io_queue[i].cx;
-                    chunks[idx].z = io_queue[i].cz;
-                    
-                    memcpy(chunks[idx].blocks, io_queue[i].data.blocks, sizeof(chunks[idx].blocks));
-                    memcpy(chunks[idx].light, io_queue[i].data.light, sizeof(chunks[idx].light));
-                    chunks[idx].plant_count = io_queue[i].data.plant_count;
-                    memcpy(chunks[idx].plants, io_queue[i].data.plants, sizeof(chunks[idx].plants));
-                    
-                    chunks[idx].mesh_dirty = 1;
-                    chunks[idx].mesh_built = 0;
-                    chunks[idx].plant_mesh_built = 0;
-                    chunks[idx].grass_deco_built = 0;
-                    
-                    // Lighting optimization:
-                    // If the worker already computed sunlight columns (generated chunks),
-                    // skip the expensive full recalculation and only do cross-chunk propagation.
-                    // For loaded-from-disk chunks, we still need full recalc.
-                    if(io_queue[i].data.light_calculated) {
-                        // Worker did sunlight - just propagate across chunk boundaries
-                        propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
-                    } else {
-                        // Loaded from disk (old save) - full recalculation needed
-                        recalculate_chunk_lighting(&chunks[idx], chunks, num_chunks);
-                        propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
-                    }
-                    
-                    // Mark neighbor chunks as dirty so they rebuild border faces
-                    int cx = chunks[idx].x;
-                    int cz = chunks[idx].z;
-                    
-                    int neighbor_offsets[8] = {-1, 0, 1, 0, 0, -1, 0, 1};
-                    for(int ni = 0; ni < 4; ni++) {
-                        int ncx = cx + neighbor_offsets[ni * 2];
-                        int ncz = cz + neighbor_offsets[ni * 2 + 1];
-                        int nidx = get_chunk_index(ncx, ncz);
+                
+                if (io_queue[i].type == 3) { // MESH BUILT
+                     if(idx >= 0 && idx < num_chunks) {
+                         // Upload to GPU (Main Thread)
+                         upload_chunk_mesh(&chunks[idx], io_queue[i].mesh_data);
+                         upload_plant_mesh(&chunks[idx], io_queue[i].plant_mesh);
+                         
+                         // Unlock
+                         chunks[idx].locked--;
+                         if (chunks[idx].locked < 0) chunks[idx].locked = 0;
+                         
+                         // Unlock Neighbors
+                         int neighbor_offsets[8] = {-1, 0, 1, 0, 0, -1, 0, 1};
+                         Chunk* c = &chunks[idx];
+                         for(int ni = 0; ni < 4; ni++) {
+                            int ncx = c->x + neighbor_offsets[ni * 2];
+                            int ncz = c->z + neighbor_offsets[ni * 2 + 1];
+                            int nidx = get_chunk_index(ncx, ncz);
+                            
+                            if(chunks[nidx].x == ncx && chunks[nidx].z == ncz) {
+                                 chunks[nidx].locked--; 
+                                 if (chunks[nidx].locked < 0) chunks[nidx].locked = 0;
+                            }
+                         }
+                     }
+                     io_queue[i].status = 0;
+                     processed++;
+                }
+                else if (io_queue[i].type == 2) { // LOAD
+                    if(idx >= 0 && idx < num_chunks) {
+                        // CRITICAL: Do not update chunk data if it is locked (being read by mesh gen)
+                        if (chunks[idx].locked > 0) {
+                            // Defer this update. Keep status as COMPLETED (2).
+                            // We will try again next frame.
+                            continue;
+                        }
+
+                        // Apply Data
+                        chunks[idx].x = io_queue[i].cx;
+                        chunks[idx].z = io_queue[i].cz;
                         
-                        if(chunks[nidx].x == ncx && chunks[nidx].z == ncz) {
-                            // Re-propagate light across boundary
-                            propagate_light_in_chunk(&chunks[nidx], chunks, num_chunks);
-                            chunks[nidx].mesh_dirty = 1;
+                        memcpy(chunks[idx].blocks, io_queue[i].data.blocks, sizeof(chunks[idx].blocks));
+                        memcpy(chunks[idx].light, io_queue[i].data.light, sizeof(chunks[idx].light));
+                        chunks[idx].plant_count = io_queue[i].data.plant_count;
+                        memcpy(chunks[idx].plants, io_queue[i].data.plants, sizeof(chunks[idx].plants));
+                        
+                        chunks[idx].mesh_dirty = 1;
+                        chunks[idx].mesh_built = 0;
+                        chunks[idx].plant_mesh_built = 0;
+                        chunks[idx].grass_deco_built = 0;
+                        
+                        if(io_queue[i].data.light_calculated) {
+                            double t0 = GetTime();
+                            propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
+                            prof_prop_time += (GetTime() - t0);
+                            
+                        } else {
+                            double t0 = GetTime();
+                            recalculate_chunk_lighting(&chunks[idx], chunks, num_chunks);
+                            propagate_light_in_chunk(&chunks[idx], chunks, num_chunks);
+                            prof_prop_time += (GetTime() - t0);
+                        }
+                        
+                        // Mark neighbors
+                        int cx = chunks[idx].x;
+                        int cz = chunks[idx].z;
+                        int neighbor_offsets[8] = {-1, 0, 1, 0, 0, -1, 0, 1};
+                        for(int ni = 0; ni < 4; ni++) {
+                            int ncx = cx + neighbor_offsets[ni * 2];
+                            int ncz = cz + neighbor_offsets[ni * 2 + 1];
+                            int nidx = get_chunk_index(ncx, ncz);
+                            if(chunks[nidx].x == ncx && chunks[nidx].z == ncz) {
+                                double t0 = GetTime();
+                                propagate_light_in_chunk(&chunks[nidx], chunks, num_chunks);
+                                chunks[nidx].mesh_dirty = 1;
+                                prof_prop_time += (GetTime() - t0);
+                            }
                         }
                     }
-                    
-                    processed_count++;
+                    io_queue[i].status = 0; // Free
+                    processed++;
                 }
-                io_queue[i].status = 0; // Free
             }
-            // Status 3 (FAILED) is now handled in thread by generating
         }
     }
 }
@@ -686,9 +866,6 @@ fn load_player_data(x: float*, y: float*, z: float*, block: int*, yaw: float*, p
 // Synchronous load - try to load from disk, generate if file doesn't exist
 fn load_chunk_into(c: Chunk*, cx: int, cz: int) {
     // Initialize defaults 
-    // We can't call Chunk::new because that returns a value on stack (potentially large copy)
-    // and we want to write into existing pointer.
-    // Chunk init logic:
     c.x = cx;
     c.z = cz;
     c.mesh_built = 0;
@@ -696,19 +873,6 @@ fn load_chunk_into(c: Chunk*, cx: int, cz: int) {
     c.grass_deco_built = 0;
     c.water_mesh_built = 0;
     c.plant_count = 0;
-    
-    // We need to generate data if load fails
-    // But generating directly into `c` is tricky if we use `generate_chunk_data` which takes `ChunkData*`.
-    // `Chunk` structure matches `ChunkData` structure generally?
-    // `ChunkData` has `blocks`, `light`, ...
-    // `Chunk` has `blocks`, `light`...
-    // They are compatible in layout?
-    // `ChunkData` struct: blocks[16][256][16], light, plant_count, plants.
-    // `Chunk` struct: x, z, ... blocks, light ... plants.
-    // They are NOT identical layout. `Chunk` has headers.
-    
-    // So we need `ChunkData` temp. 
-    // ALLOCATE ON HEAP to avoid stack overflow.
     
     raw {
         ChunkData* data_ptr = (ChunkData*)malloc(sizeof(ChunkData));
@@ -735,7 +899,6 @@ fn load_chunk_into(c: Chunk*, cx: int, cz: int) {
         }
         
         // Copy to Chunk
-        // Access c->blocks via pointer
         memcpy(c->blocks, data_ptr->blocks, sizeof(c->blocks));
         memcpy(c->light, data_ptr->light, sizeof(c->light));
         c->plant_count = data_ptr->plant_count;
@@ -743,11 +906,4 @@ fn load_chunk_into(c: Chunk*, cx: int, cz: int) {
         
         free(data_ptr);
     }
-    
-    // Recalculate lighting only if loaded? Or always?
-    // Generated chunks have light set by generator.
-    // Loaded chunks might need fix (old bug).
-    // Let's safe side: recalculate. Or maybe just propagate.
-    // For now, assume loaded/generated is close enough.
-    // Using `recalculate_chunk_lighting` is heavy.
 }

@@ -15,9 +15,9 @@ extern fn rand() -> int;
 extern fn abs(v: int) -> int;
 
 // World configuration
-def RENDER_DISTANCE = 6;
-def CHUNK_MAP_SIZE = 13; // RENDER_DISTANCE * 2 + 1
-def MAX_CHUNKS = 169;    // CHUNK_MAP_SIZE * CHUNK_MAP_SIZE
+def RENDER_DISTANCE = 15;
+def CHUNK_MAP_SIZE = 31; // RENDER_DISTANCE * 2 + 1
+def MAX_CHUNKS = 961;    // CHUNK_MAP_SIZE * CHUNK_MAP_SIZE
 #define CHUNK_HEIGHT 128
 
 struct Plant {
@@ -56,11 +56,22 @@ struct Chunk {
     
     mesh_dirty: int; // 1 = needs rebuild (both)
     mesh_built: int; // 1 = block mesh has been created
-    
+
     x: int;
     z: int;
+
+    // Thread safety
+    locked: int; // > 0 if being read/written by thread
 }
 
+struct ChunkMeshes {
+    opq_mesh: rl::Mesh;
+    water: rl::Mesh;
+    has_opaque: int;
+    has_water: int;
+}
+
+// Forward declarations
 // Forward declarations
 extern fn GenImagePerlinNoise(width: int, height: int, offsetX: int, offsetY: int, scale: float) -> rl::Image;
 fn get_block(chunks: Chunk*, num_chunks: int, x: int, y: int, z: int) -> int;
@@ -471,6 +482,18 @@ impl Chunk {
         let c: Chunk;
         c.x = x;
         c.z = z;
+        c.mesh_dirty = 1;
+        c.mesh_built = 0;
+        c.water_mesh_built = 0;
+        c.plant_mesh_built = 0;
+        c.grass_deco_built = 0;
+        c.locked = 0;
+        c.plant_count = 0; // Initialize explicitly
+        
+        memset(&c.chunk_model, 0, sizeof(Model));
+        memset(&c.water_model, 0, sizeof(Model));
+        memset(&c.plant_model, 0, sizeof(Model));
+        memset(&c.grass_deco_model, 0, sizeof(Model));
 
         // Generate Heightmap
         let heights: int[16][16];
@@ -683,48 +706,50 @@ impl Chunk {
             let gx_base = (float)(self.x * 16);
             let gz_base = (float)(self.z * 16);
             
-            let offset = rl::Vector3{
+            let offset = Vector3{
                 x: gx_base,
                 y: 0.0,
                 z: gz_base
             };
             
-            rl::DrawModel(self.chunk_model, offset, 1.0, rl::WHITE);
+            DrawModel(self.chunk_model, offset, 1.0, WHITE);
         }
     }
 
     // Draw Transparent (Water, Plants, Glass)
-    fn draw_transparent(self, chunks: Chunk*, num_chunks: int, player_cx: int, player_cz: int) {
+    fn draw_transparent(self, chunks: Chunk*, num_chunks: int, player_cx: int, player_cz: int, show_grass_deco: int) {
         if (self.x == -9999) return;
         
         // Base transparency loop
         let gx_base = (float)(self.x * 16);
         let gz_base = (float)(self.z * 16);
-        let offset = rl::Vector3{ x: gx_base, y: 0.0, z: gz_base };
+        let offset = Vector3{ x: gx_base, y: 0.0, z: gz_base };
 
         // 1. Water
         if (self.water_mesh_built) {
-            rl::DrawModel(self.water_model, offset, 1.0f, rl::WHITE);
+            DrawModel(self.water_model, offset, 1.0f, WHITE);
         }
         
         // 2. Plants (Alpha Cutout)
         if self.plant_mesh_built != 0 {
-            rl::DrawModel(self.plant_model, offset, 1.0, rl::WHITE);
+            DrawModel(self.plant_model, offset, 1.0, WHITE);
         }
         
         // 3. Grass Decorations (LOD)
-        // Check distance to center of chunk
-        let dx = (float)player_cx - (gx_base + 8.0);
-        let dz = (float)player_cz - (gz_base + 8.0);
-        let dist_sq = dx * dx + dz * dz;
-        
-        if dist_sq < 576.0 { // 24.0 ^ 2
-             if self.grass_deco_built == 0 && self.mesh_built != 0 {
-                build_grass_decorations(self, chunks, num_chunks);
-            }
-            
-            if self.grass_deco_built != 0 {
-                rl::DrawModel(self.grass_deco_model, offset, 1.0, rl::WHITE);
+        if show_grass_deco {
+            // Check distance to center of chunk
+            let dx = (float)player_cx - (gx_base + 8.0);
+            let dz = (float)player_cz - (gz_base + 8.0);
+            let dist_sq = dx * dx + dz * dz;
+
+            if dist_sq < 576.0 { // 24.0 ^ 2
+                 if self.grass_deco_built == 0 && self.mesh_built != 0 {
+                    build_grass_decorations(self, chunks, num_chunks);
+                }
+                
+                if self.grass_deco_built != 0 {
+                    DrawModel(self.grass_deco_model, offset, 1.0, WHITE);
+                }
             }
         }
     }
